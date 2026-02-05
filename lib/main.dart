@@ -1,122 +1,224 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:hotkey_manager/hotkey_manager.dart';
+import 'package:provider/provider.dart';
+import 'package:window_manager/window_manager.dart';
+import 'package:screen_capturer/screen_capturer.dart';
+import 'package:system_tray/system_tray.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:yakala/providers/app_state.dart';
+import 'package:yakala/utils/clipboard_utils.dart';
+import 'package:yakala/utils/tray_utils.dart';
+import 'package:yakala/pages/settings_page.dart';
 
-void main() {
-  runApp(const MyApp());
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // 1. Pencere Yöneticisini Başlat
+  await windowManager.ensureInitialized();
+  
+  WindowOptions windowOptions = const WindowOptions(
+    size: Size(800, 600),
+    center: true,
+    backgroundColor: Colors.transparent,
+    skipTaskbar: true,
+    titleBarStyle: TitleBarStyle.hidden,
+    windowButtonVisibility: false,
+  );
+  
+  await windowManager.waitUntilReadyToShow(windowOptions, () async {
+    await windowManager.hide();
+  });
+
+  // Global AppState instance for usage outside of widget tree (like in tray/hotkeys)
+  final appState = AppState();
+
+  // 2. Kısayol (Cmd+Shift+C)
+  await hotKeyManager.unregisterAll();
+  HotKey captureHotKey = HotKey(
+    key: PhysicalKeyboardKey.keyC,
+    modifiers: [HotKeyModifier.shift, HotKeyModifier.meta], 
+    scope: HotKeyScope.system,
+  );
+
+  await hotKeyManager.register(
+    captureHotKey,
+    keyDownHandler: (hotKey) async {
+      debugPrint('📸 Kısayol tetiklendi');
+      appState.navigateTo(AppPage.capture);
+      await windowManager.show();
+      await windowManager.focus();
+    },
+  );
+
+  // 3. System Tray (Menü)
+  final SystemTray systemTray = SystemTray();
+  String iconPath = await TrayUtils.getIconPath(); // Asset -> File
+
+  await systemTray.initSystemTray(
+    title: "Yakala",
+    iconPath: iconPath,
+    toolTip: "Yakala",
+  );
+
+  final Menu menu = Menu();
+  await menu.buildFrom([
+    MenuItemLabel(label: 'Ekranı Yakala', onClicked: (menuItem) async {
+      appState.navigateTo(AppPage.capture);
+      await windowManager.show();
+      await windowManager.focus();
+    }),
+    MenuItemLabel(label: 'Ayarlar', onClicked: (menuItem) async {
+      appState.navigateTo(AppPage.settings);
+      await windowManager.show();
+      await windowManager.focus();
+    }),
+    MenuItemLabel(label: 'Çıkış', onClicked: (menuItem) {
+      exit(0);
+    }),
+  ]);
+
+  await systemTray.setContextMenu(menu);
+
+  runApp(
+    ChangeNotifierProvider.value(
+      value: appState,
+      child: const YakalaApp(),
+    ),
+  );
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+class YakalaApp extends StatelessWidget {
+  const YakalaApp({super.key});
 
-  // This widget is the root of your application.
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Flutter Demo',
+      debugShowCheckedModeBanner: false,
+      title: 'Yakala',
       theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple, brightness: Brightness.dark),
+        useMaterial3: true,
+        scaffoldBackgroundColor: Colors.transparent,
       ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+      home: Consumer<AppState>(
+        builder: (context, appState, child) {
+          switch (appState.currentPage) {
+            case AppPage.settings:
+              return const SettingsPage();
+            case AppPage.capture:
+              return const CaptureScreen();
+            case AppPage.home:
+              return const CaptureScreen();
+          }
+        },
+      ),
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
-
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
-  final String title;
+class CaptureScreen extends StatefulWidget {
+  const CaptureScreen({super.key});
 
   @override
-  State<MyHomePage> createState() => _MyHomePageState();
+  State<CaptureScreen> createState() => _CaptureScreenState();
 }
 
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+class _CaptureScreenState extends State<CaptureScreen> {
+  String _status = "Kısayol bekleniyor: Cmd+Shift+C";
 
-  void _incrementCounter() {
-    setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
-    });
+  Future<void> _captureScreen() async {
+    setState(() => _status = "Ekran Görüntüsü Alınıyor...");
+
+    try {
+      await windowManager.hide();
+      await Future.delayed(const Duration(milliseconds: 300));
+
+      Directory tempDir = await getTemporaryDirectory();
+      String savePath = '${tempDir.path}/yakala_temp_${DateTime.now().millisecondsSinceEpoch}.png';
+
+      CapturedData? capturedData = await screenCapturer.capture(
+        mode: CaptureMode.screen,
+        imagePath: savePath,
+        silent: true,
+      );
+
+      if (capturedData != null && File(savePath).existsSync()) {
+         await ClipboardUtils.copyImageToClipboard(savePath);
+         
+         await windowManager.show();
+         if (mounted) {
+           setState(() {
+             _status = "Görüntü Panoya Kopyalandı! (Cmd+V yap)";
+           });
+         }
+         
+         // 2 saniye sonra otomatik gizle (Opsiyonel, kullanıcı dostu)
+         Future.delayed(const Duration(seconds: 3), () async {
+           if (mounted) await windowManager.hide();
+         });
+         
+      } else {
+        await windowManager.show();
+         if (mounted) setState(() => _status = "Görüntü alınamadı.");
+      }
+    } catch (e) {
+      await windowManager.show();
+      if (mounted) setState(() => _status = "Hata: $e");
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
     return Scaffold(
-      appBar: AppBar(
-        // TRY THIS: Try changing the color here to a specific color (to
-        // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-        // change color while the other colors stay the same.
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
-      ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
-        child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          //
-          // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
-          // action in the IDE, or press "p" in the console), to see the
-          // wireframe for each widget.
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            const Text('You have pushed the button this many times:'),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
+      // ignore: deprecated_member_use
+      backgroundColor: Colors.black.withOpacity(0.85),
+      body: Stack(
+        children: [
+          // Kapat Butonu (Sağ Üst)
+          Positioned(
+            top: 10, right: 10,
+            child: IconButton(
+              icon: const Icon(Icons.close, color: Colors.white54),
+              onPressed: () => windowManager.hide(),
             ),
-          ],
-        ),
+          ),
+          Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.camera, size: 80, color: Colors.deepPurpleAccent),
+                const SizedBox(height: 20),
+                Text(
+                  _status,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w300),
+                ),
+                const SizedBox(height: 40),
+                ElevatedButton.icon(
+                  onPressed: _captureScreen,
+                  icon: const Icon(Icons.touch_app),
+                  label: const Text("Şimdi Yakala"),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.deepPurple,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 15),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                TextButton(
+                  onPressed: () {
+                    // Ayarlar'a geçiş butonu
+                    context.read<AppState>().navigateTo(AppPage.settings);
+                  }, 
+                  child: const Text("Ayarlar", style: TextStyle(color: Colors.white54)),
+                )
+              ],
+            ),
+          ),
+        ],
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
-      ), // This trailing comma makes auto-formatting nicer for build methods.
     );
   }
 }
