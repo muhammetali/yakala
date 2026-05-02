@@ -139,11 +139,11 @@ void main() {
     /// `_confirmSelection` async (await `_cropBackground`) olduğu için ekstra
     /// pump'lar ile microtask + setState frame'i tüketilir.
     ///
-    /// `runAsync`: ImagePainter.memory `ui.decodeImageFromList`'in callback'i
-    /// real-time olmadan fire etmez — pump-only test zamanında widget unmount
-    /// edilirken disposed-ValueNotifier assertion atar. Decode callback'inin
-    /// tester teardown'dan önce çalışmasını sağlamak için fake-async dışında
-    /// kısa bir gecikme bekliyoruz.
+    /// `runAsync` + delay: `_cropBackground` artık `compute()` ile worker
+    /// isolate'a iniyor — isolate spawn + decode/crop/encode zaman alır.
+    /// 500ms isolate spawn'ın yavaş olduğu CI runner'larında bile yetiyor.
+    /// (ImagePainter decode callback'i için ayrıca her testin sonunda
+    /// `drainImageDecode` çağrılır.)
     Future<void> enterAnnotatingPhase(WidgetTester tester) async {
       final gesture = await tester.startGesture(const Offset(100, 100));
       await gesture.moveTo(const Offset(200, 200));
@@ -152,7 +152,7 @@ void main() {
       await tester.pump();
       await tester.pump();
       await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 50)),
+        () => Future<void>.delayed(const Duration(milliseconds: 500)),
       );
       await tester.pump();
     }
@@ -163,6 +163,21 @@ void main() {
       return tester
           .widget<ImagePainter>(find.byType(ImagePainter))
           .controller;
+    }
+
+    /// Test sonunda image_painter'ın `_decodeImageFromListAsync`
+    /// callback'inin widget HALA mount'tayken fire etmesini garantiler.
+    /// Aksi halde widget unmount sonrası geç gelen callback disposed-
+    /// ValueNotifier exception atıyor (image_painter v0.7.1). Decode
+    /// callback'i fake-async clock'a düşmez; runAsync + pump döngüsü
+    /// hem real-time clock'u ilerletir hem scheduler microtask'larını
+    /// drain eder. Her testin assertion'larından sonra çağrılmalı.
+    Future<void> drainImageDecode(WidgetTester tester) async {
+      for (var i = 0; i < 10; i++) {
+        await tester.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 50)));
+        await tester.pump();
+      }
     }
 
     testWidgets('Yazı butonuna tıklayınca "Metin Ekle" dialog açılır',
@@ -185,6 +200,8 @@ void main() {
       expect(find.text('İptal'), findsOneWidget);
       expect(find.text('Ekle'), findsOneWidget);
       expect(find.byType(TextField), findsOneWidget);
+
+      await drainImageDecode(tester);
     });
 
     testWidgets('İptal dialog\'u kapatır, paint history büyümez',
@@ -209,6 +226,8 @@ void main() {
       expect(ctrl.paintHistory.length, beforeCount);
       // Cancel yolunda mode freeStyle'a döner
       expect(ctrl.mode, PaintMode.freeStyle);
+
+      await drainImageDecode(tester);
     });
 
     testWidgets(
@@ -244,6 +263,8 @@ void main() {
       // Mode text olarak kalmalı: kullanıcı sürükleyerek pozisyonlayabilsin
       // (image_painter onTextUpdateMode mekanizması son text'i taşır).
       expect(ctrl.mode, PaintMode.text);
+
+      await drainImageDecode(tester);
     });
 
     testWidgets(
@@ -265,6 +286,8 @@ void main() {
       final ctrl = readController(tester);
       expect(ctrl.paintHistory, isEmpty);
       expect(ctrl.mode, PaintMode.freeStyle);
+
+      await drainImageDecode(tester);
     });
 
     testWidgets(
@@ -288,6 +311,8 @@ void main() {
       expect(ctrl.paintHistory, isEmpty,
           reason: 'pop(tc.text.trim()) boş string döner → addPaintInfo skip');
       expect(ctrl.mode, PaintMode.freeStyle);
+
+      await drainImageDecode(tester);
     });
 
     testWidgets('Metnin başındaki/sonundaki boşluklar trim edilir',
@@ -308,6 +333,8 @@ void main() {
       final ctrl = readController(tester);
       expect(ctrl.paintHistory, hasLength(1));
       expect(ctrl.paintHistory.first.text, 'selam');
+
+      await drainImageDecode(tester);
     });
   });
 }
