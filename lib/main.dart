@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -10,6 +11,7 @@ import 'package:yakala/services/autostart_service.dart';
 import 'package:yakala/services/capture_service.dart';
 import 'package:yakala/services/hotkey_service.dart';
 import 'package:yakala/services/instance_command_service.dart';
+import 'package:yakala/services/notification_service.dart';
 import 'package:yakala/services/region_selector_service.dart';
 import 'package:yakala/services/single_instance_service.dart';
 import 'package:yakala/services/tray_service.dart';
@@ -62,6 +64,15 @@ Future<void> main(List<String> args) async {
       'UYARI: Global kısayol kaydı başarısız (muhtemelen başka uygulama '
       'kullanıyor): ${settings.hotkey.displayLabel}',
     );
+    // Settings açık değilse SnackBar görünmez; native bildirim ile
+    // (özellikle Wayland kullanıcıları için) durumu kullanıcıya iletiyoruz.
+    // Tray menüsü hala kullanılabilir → fatal değil.
+    unawaited(NotificationService.show(
+      'Yakala',
+      'Kısayol "${settings.hotkey.displayLabel}" kaydedilemedi. '
+          'Tray menüsünden yakalayabilir veya Ayarlar\'dan farklı bir '
+          'kombinasyon seçebilirsiniz.',
+    ));
   }
 
   // İkinci örneklerden gelecek IPC komutlarını dinle. Launcher tıklaması
