@@ -146,7 +146,7 @@ class CaptureService {
       }
     }
     if (!ok) {
-      await NotificationService.show('Yakala', _captureFailMessage());
+      await NotificationService.show('Yakala', captureFailMessage());
       return null;
     }
 
@@ -207,7 +207,7 @@ class CaptureService {
     }
 
     if (settings.notificationsEnabled) {
-      final body = _buildNotificationBody(
+      final body = buildNotificationBody(
         clipboardOk: clipboardOk,
         savedToDisk: savedToDisk,
       );
@@ -223,7 +223,7 @@ class CaptureService {
     int timestamp,
   ) async {
     try {
-      final expanded = _expandHome(savePath);
+      final expanded = expandHome(savePath);
       final dir = Directory(expanded);
       if (!await dir.exists()) {
         await dir.create(recursive: true);
@@ -237,28 +237,36 @@ class CaptureService {
     }
   }
 
-  String _expandHome(String path) {
+  /// `~` ve `~/...` formatlarını $HOME / %USERPROFILE% ile genişletir. Hiçbir
+  /// env yoksa girdiyi olduğu gibi döner. `_persistToUserPath` çağırıyor;
+  /// public yapmamızın tek sebebi unit test edilebilirliği — instance state
+  /// kullanmıyor, bu yüzden static.
+  @visibleForTesting
+  static String expandHome(String path,
+      {Map<String, String>? overrideEnv}) {
     if (!path.startsWith('~')) return path;
-    final home = Platform.environment['HOME'] ??
-        Platform.environment['USERPROFILE'] ??
-        '';
+    final env = overrideEnv ?? Platform.environment;
+    final home = env['HOME'] ?? env['USERPROFILE'] ?? '';
     if (home.isEmpty) return path;
     return p.join(home, path.substring(path.startsWith('~/') ? 2 : 1));
   }
 
-  /// Linux'ta region capture için silent_capture + screen_capturer fallback
-  /// zinciri tamamen başarısız olduğunda gösterilen mesaj. Eksik aracın
-  /// hangisi olduğunu kullanıcıya söyleyebilmek için DisplayServer'a bakarız.
-  String _captureFailMessage() {
+  /// Region capture için silent_capture + screen_capturer fallback zinciri
+  /// tamamen başarısız olduğunda gösterilen mesaj. Linux'ta hangi paketin
+  /// eksik olduğunu DisplayServer'a göre tahmin ederiz.
+  @visibleForTesting
+  static String captureFailMessage({Map<String, String>? overrideEnv}) {
     if (!Platform.isLinux) return 'Tam ekran yakalanamadı.';
-    final wayland = Platform.environment['WAYLAND_DISPLAY']?.isNotEmpty == true ||
-        (Platform.environment['XDG_SESSION_TYPE']?.toLowerCase() == 'wayland');
+    final env = overrideEnv ?? Platform.environment;
+    final wayland = (env['WAYLAND_DISPLAY']?.isNotEmpty ?? false) ||
+        (env['XDG_SESSION_TYPE']?.toLowerCase() == 'wayland');
     final pkg = wayland ? 'grim' : 'imagemagick';
     return 'Tam ekran yakalanamadı. Eksik araç: $pkg. '
         'Kurulum scriptini yeniden çalıştırın: bash linux/install-launcher.sh';
   }
 
-  String _buildNotificationBody({
+  @visibleForTesting
+  static String buildNotificationBody({
     required bool clipboardOk,
     required String? savedToDisk,
   }) {
