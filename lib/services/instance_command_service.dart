@@ -103,12 +103,12 @@ class InstanceCommandService {
   ) async {
     try {
       _server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
-      _windowsToken = _generateToken();
+      _windowsToken = generateToken();
       final port = _server!.port;
       final handshakePath = await _windowsHandshakeFilePath();
       // 'PORT TOKEN' tek satır. Atomic değil ama küçük dosya, kabul.
       await File(handshakePath).writeAsString(
-        '$port $_windowsToken\n',
+        formatHandshake(port, _windowsToken!),
         flush: true,
       );
       _sub = _server!.listen(
@@ -150,20 +150,17 @@ class InstanceCommandService {
           .timeout(_timeout)
           .fold<List<int>>(<int>[], (acc, chunk) => acc..addAll(chunk));
       final raw = utf8.decode(bytes).trim();
-      // 'TOKEN COMMAND' bekleniyor. Token uzunluğu ve değeri sabit.
-      final spaceIdx = raw.indexOf(' ');
-      if (spaceIdx < 0) {
+      final parsed = parseClientMessage(raw);
+      if (parsed == null) {
         debugPrint('IPC: format hatalı (token boşluk komut bekleniyor).');
         return;
       }
-      final token = raw.substring(0, spaceIdx);
-      final cmd = raw.substring(spaceIdx + 1).trim();
-      if (_windowsToken == null || token != _windowsToken) {
+      if (_windowsToken == null || parsed.token != _windowsToken) {
         debugPrint('IPC: token doğrulanamadı, komut reddedildi.');
         return;
       }
-      if (cmd.isNotEmpty) {
-        await onCommand(cmd);
+      if (parsed.command.isNotEmpty) {
+        await onCommand(parsed.command);
       }
     } catch (e) {
       debugPrint('IPC istemci hatası: $e');
@@ -212,18 +209,17 @@ class InstanceCommandService {
       final handshakePath = await _windowsHandshakeFilePath();
       final f = File(handshakePath);
       if (!await f.exists()) return false;
-      final content = (await f.readAsString()).trim();
-      final parts = content.split(' ');
-      if (parts.length != 2) {
-        debugPrint('IPC: handshake dosyası bozuk: $content');
+      final content = await f.readAsString();
+      final handshake = parseHandshake(content);
+      if (handshake == null) {
+        debugPrint('IPC: handshake dosyası bozuk: ${content.trim()}');
         return false;
       }
-      final port = int.tryParse(parts[0]);
-      final token = parts[1];
-      if (port == null) return false;
-      socket = await Socket.connect(InternetAddress.loopbackIPv4, port)
-          .timeout(_timeout);
-      socket.add(utf8.encode('$token $command'));
+      socket = await Socket.connect(
+        InternetAddress.loopbackIPv4,
+        handshake.port,
+      ).timeout(_timeout);
+      socket.add(utf8.encode('${handshake.token} $command'));
       await socket.flush();
       return true;
     } catch (e) {
@@ -256,11 +252,46 @@ class InstanceCommandService {
   }
 
   /// 16 byte cryptographic-quality rastgele → 32 hex karakter.
-  static String _generateToken() {
+  /// `@visibleForTesting`: özellik gerçek mi diye unit test ile sabitleyebilelim.
+  @visibleForTesting
+  static String generateToken() {
     final rng = Random.secure();
     final bytes = List<int>.generate(16, (_) => rng.nextInt(256));
     return bytes
         .map((b) => b.toRadixString(16).padLeft(2, '0'))
         .join();
+  }
+
+  /// Handshake dosyasının kanonik formatı: `'PORT TOKEN\n'` (tek satır).
+  @visibleForTesting
+  static String formatHandshake(int port, String token) => '$port $token\n';
+
+  /// Handshake dosyasının içeriğini parse eder. Hatalı format → null.
+  /// Kabul edilen: 'PORT TOKEN' (gereksiz boşluk/newline trim'lenir).
+  /// Reddedilen: parça sayısı ≠ 2, port int değil, token boş.
+  @visibleForTesting
+  static ({int port, String token})? parseHandshake(String raw) {
+    final content = raw.trim();
+    if (content.isEmpty) return null;
+    final parts = content.split(' ');
+    if (parts.length != 2) return null;
+    final port = int.tryParse(parts[0]);
+    if (port == null) return null;
+    final token = parts[1];
+    if (token.isEmpty) return null;
+    return (port: port, token: token);
+  }
+
+  /// Windows IPC client'tan gelen mesajı parse eder. Format: 'TOKEN COMMAND'.
+  /// COMMAND birden fazla kelime içerebilir; sadece İLK boşluk ayraçtır.
+  /// Geriye dönen: token + command. Hatalı format → null.
+  @visibleForTesting
+  static ({String token, String command})? parseClientMessage(String raw) {
+    final spaceIdx = raw.indexOf(' ');
+    if (spaceIdx < 0) return null;
+    final token = raw.substring(0, spaceIdx);
+    if (token.isEmpty) return null;
+    final command = raw.substring(spaceIdx + 1).trim();
+    return (token: token, command: command);
   }
 }
