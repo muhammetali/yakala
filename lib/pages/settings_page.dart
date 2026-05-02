@@ -71,7 +71,8 @@ class SettingsPage extends StatelessWidget {
                 ),
                 _SwitchTile(
                   title: 'Yakalama Sonrası Düzenle',
-                  subtitle: 'Çizim/yazı/şekil ekleme editörünü aç',
+                  subtitle: 'Tüm ekran/pencere yakalamasından sonra editör aç '
+                      '(Bölge yakalama her zaman editörü gösterir)',
                   value: settings.showEditorAfterCapture,
                   onChanged: settings.setShowEditorAfterCapture,
                 ),
@@ -261,17 +262,20 @@ class _SwitchTile extends StatelessWidget {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(title, style: TextStyle(color: onSurface, fontSize: 14)),
-              const Gap(2),
-              Text(
-                subtitle,
-                style: TextStyle(color: onSurfaceVariant, fontSize: 11),
-              ),
-            ],
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: TextStyle(color: onSurface, fontSize: 14)),
+                const Gap(2),
+                Text(
+                  subtitle,
+                  style: TextStyle(color: onSurfaceVariant, fontSize: 11),
+                ),
+              ],
+            ),
           ),
+          const Gap(8),
           Switch.adaptive(
             value: value,
             onChanged: enabled ? (v) => onChanged(v) : null,

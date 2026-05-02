@@ -48,7 +48,11 @@ dependencies:
   path: ^1.9.0
   image: ^4.5.0
   screen_retriever: ^0.2.0
-  image_painter: ^0.7.1
+  # Pin to exact patch: bizim widget'larımız paketin v0.7.1 dispose
+  # davranışına bağımlı (image_painter widget'ı kendi dispose'unda
+  # ImagePainterController'ı dispose ediyor). Caret kullanırsak patch
+  # versiyonu davranışı değiştirebilir → double-dispose crash.
+  image_painter: 0.7.1
 
 dev_dependencies:
   flutter_test:

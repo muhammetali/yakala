@@ -7,6 +7,47 @@ import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
 import 'package:image_painter/image_painter.dart';
 
+/// `compute()` argümanı — Rect/Size yerine düz primitives, isolate
+/// transfer'inde tip uyuşmazlığı riskini sıfırlar.
+class _CropArgs {
+  final Uint8List bytes;
+  final double left;
+  final double top;
+  final double width;
+  final double height;
+  final double logicalWidth;
+  final double logicalHeight;
+
+  const _CropArgs({
+    required this.bytes,
+    required this.left,
+    required this.top,
+    required this.width,
+    required this.height,
+    required this.logicalWidth,
+    required this.logicalHeight,
+  });
+}
+
+/// Top-level (compute() bunu zorunlu kılar): PNG decode → copyCrop →
+/// encode. Hata olursa null. Çağrılan worker isolate'ta paralel çalışır.
+Uint8List? _cropPngInIsolate(_CropArgs a) {
+  try {
+    final decoded = img.decodePng(a.bytes);
+    if (decoded == null) return null;
+    final sx = decoded.width / a.logicalWidth;
+    final sy = decoded.height / a.logicalHeight;
+    final x = (a.left * sx).round().clamp(0, decoded.width - 1);
+    final y = (a.top * sy).round().clamp(0, decoded.height - 1);
+    final w = (a.width * sx).round().clamp(1, decoded.width - x);
+    final h = (a.height * sy).round().clamp(1, decoded.height - y);
+    final cropped = img.copyCrop(decoded, x: x, y: y, width: w, height: h);
+    return Uint8List.fromList(img.encodePng(cropped));
+  } catch (_) {
+    return null;
+  }
+}
+
 /// İki fazlı bölge yakalama overlay'i.
 ///
 /// **Phase 1 (selecting):** Sürükle ile bölge seç, 8 handle ile resize, içeride
@@ -262,21 +303,20 @@ class _RegionOverlayState extends State<RegionOverlay> {
     debugPrint('[Yakala/RegionOverlay] annotating phase ready (cropped=${cropped.length}B)');
   }
 
-  Future<Uint8List?> _cropBackground(Rect logicalRect, Size logicalSize) async {
-    try {
-      final decoded = img.decodePng(widget.backgroundImage);
-      if (decoded == null) return null;
-      final sx = decoded.width / logicalSize.width;
-      final sy = decoded.height / logicalSize.height;
-      final x = (logicalRect.left * sx).round().clamp(0, decoded.width - 1);
-      final y = (logicalRect.top * sy).round().clamp(0, decoded.height - 1);
-      final w = (logicalRect.width * sx).round().clamp(1, decoded.width - x);
-      final h = (logicalRect.height * sy).round().clamp(1, decoded.height - y);
-      final cropped = img.copyCrop(decoded, x: x, y: y, width: w, height: h);
-      return Uint8List.fromList(img.encodePng(cropped));
-    } catch (_) {
-      return null;
-    }
+  Future<Uint8List?> _cropBackground(Rect logicalRect, Size logicalSize) {
+    // 4K ekranda decode/copyCrop/encode toplamı 80-250ms — UI thread'de
+    // yapılırsa kullanıcı phase 1→phase 2 geçişinde donma hisseder.
+    // compute() ile worker isolate'a alıyoruz; widget rebuild sırasında
+    // selection rect + handles render edilmeye devam eder.
+    return compute(_cropPngInIsolate, _CropArgs(
+      bytes: widget.backgroundImage,
+      left: logicalRect.left,
+      top: logicalRect.top,
+      width: logicalRect.width,
+      height: logicalRect.height,
+      logicalWidth: logicalSize.width,
+      logicalHeight: logicalSize.height,
+    ));
   }
 
   Future<void> _confirmAnnotation() async {
