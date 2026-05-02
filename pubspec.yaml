@@ -41,6 +41,14 @@ dependencies:
   path_provider: ^2.1.5
   provider: ^6.1.5+1
   gap: ^3.0.1
+  shared_preferences: ^2.3.0
+  launch_at_startup: ^0.5.1
+  file_selector: ^1.0.3
+  package_info_plus: ^8.0.0
+  path: ^1.9.0
+  image: ^4.5.0
+  screen_retriever: ^0.2.0
+  image_painter: ^0.7.1
 
 dev_dependencies:
   flutter_test:
@@ -68,6 +76,7 @@ flutter:
 
   assets:
     - assets/
+    - assets/icons/
 
   # To add assets to your application, add an assets section, like this:
   # assets:

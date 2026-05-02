@@ -15,9 +15,16 @@ struct _MyApplication {
 G_DEFINE_TYPE(MyApplication, my_application, GTK_TYPE_APPLICATION)
 
 // Called when first Flutter frame received.
+//
+// Bilerek pencereyi GÖSTERMİYORUZ. Yakala bir tray uygulaması; pencerenin
+// görünürlüğünü tamamen Dart tarafındaki `WindowService` (window_manager
+// plugin'i üzerinden) yönetir. Buradan `gtk_widget_show` çağrılırsa ilk
+// frame anında siyah bir pencere flash eder, çünkü Dart'ın `hide()` çağrısı
+// henüz uygulanmamış olur.
 static void first_frame_cb(MyApplication* self, FlView *view)
 {
-  gtk_widget_show(gtk_widget_get_toplevel(GTK_WIDGET(view)));
+  (void)self;
+  (void)view;
 }
 
 // Implements GApplication::activate.

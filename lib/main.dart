@@ -1,96 +1,139 @@
 import 'dart:io';
-import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:hotkey_manager/hotkey_manager.dart';
-import 'package:provider/provider.dart';
-import 'package:window_manager/window_manager.dart';
-import 'package:screen_capturer/screen_capturer.dart';
-import 'package:system_tray/system_tray.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:yakala/providers/app_state.dart';
-import 'package:yakala/utils/clipboard_utils.dart';
-import 'package:yakala/utils/tray_utils.dart';
-import 'package:yakala/pages/settings_page.dart';
 
-void main() async {
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:yakala/models/capture_mode.dart';
+import 'package:yakala/pages/settings_page.dart';
+import 'package:yakala/providers/settings_provider.dart';
+import 'package:yakala/services/annotation_service.dart';
+import 'package:yakala/services/autostart_service.dart';
+import 'package:yakala/services/capture_service.dart';
+import 'package:yakala/services/hotkey_service.dart';
+import 'package:yakala/services/instance_command_service.dart';
+import 'package:yakala/services/region_selector_service.dart';
+import 'package:yakala/services/single_instance_service.dart';
+import 'package:yakala/services/tray_service.dart';
+import 'package:yakala/services/window_service.dart';
+import 'package:yakala/utils/temp_cleanup.dart';
+import 'package:yakala/widgets/annotation_editor.dart';
+import 'package:yakala/widgets/region_overlay.dart';
+
+Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // 1. Pencere Yöneticisini Başlat
-  await windowManager.ensureInitialized();
-  
-  WindowOptions windowOptions = const WindowOptions(
-    size: Size(800, 600),
-    center: true,
-    backgroundColor: Colors.transparent,
-    skipTaskbar: true,
-    titleBarStyle: TitleBarStyle.hidden,
-    windowButtonVisibility: false,
+  // CLI flag'leri. Launcher (.desktop) tıklamasında --settings geçilir;
+  // login-time autostart bare çalıştırır → silent tray.
+  final showSettingsRequested = args.contains('--settings');
+
+  final lock = SingleInstanceService();
+  if (!await lock.acquire()) {
+    // Çalışan birinci örneğe ne istediğimizi söyle, sonra çık.
+    final cmd = showSettingsRequested ? 'show_settings' : 'focus';
+    await InstanceCommandService.sendCommand(cmd);
+    exit(0);
+  }
+
+  // 24 saatten eski temp PNG'leri startup'ta sil (fire-and-forget).
+  // Future await edilmiyor — main'i bekletmemek için.
+  TempCleanup.sweepOld();
+
+  final windowService = WindowService();
+  await windowService.initialize();
+
+  final autostart = AutostartService();
+  await autostart.initialize();
+
+  final settings = await SettingsProvider.create(autostart);
+  final regionSelector = RegionSelectorService();
+  final annotationService = AnnotationService();
+  final captureService = CaptureService(
+    settings: settings,
+    regionSelector: regionSelector,
+    annotationService: annotationService,
+    windowService: windowService,
   );
-  
-  await windowManager.waitUntilReadyToShow(windowOptions, () async {
-    await windowManager.hide();
+
+  final hotkeyService = HotkeyService();
+  final hotkeyOk = await hotkeyService.register(settings.hotkey, () async {
+    await captureService.capture(settings.defaultCaptureMode);
+  });
+  if (!hotkeyOk) {
+    debugPrint(
+      'UYARI: Global kısayol kaydı başarısız (muhtemelen başka uygulama '
+      'kullanıyor): ${settings.hotkey.displayLabel}',
+    );
+  }
+
+  // İkinci örneklerden gelecek IPC komutlarını dinle. Launcher tıklaması
+  // (--settings) → çalışan tray uygulaması ayarları açar; ekstra süreç açılmaz.
+  final ipcService = InstanceCommandService();
+  await ipcService.startServer(onCommand: (cmd) async {
+    switch (cmd) {
+      case 'show_settings':
+        await windowService.showSettings();
+        break;
+      case 'focus':
+        await windowService.showSettings();
+        break;
+      case 'capture_full':
+        await captureService.capture(CaptureMode.fullScreen);
+        break;
+      case 'capture_region':
+        await captureService.capture(CaptureMode.region);
+        break;
+      case 'capture_window':
+        await captureService.capture(CaptureMode.window);
+        break;
+      default:
+        debugPrint('Bilinmeyen IPC komutu: $cmd');
+    }
   });
 
-  // Global AppState instance for usage outside of widget tree (like in tray/hotkeys)
-  final appState = AppState();
-
-  // 2. Kısayol (Cmd+Shift+C)
-  await hotKeyManager.unregisterAll();
-  HotKey captureHotKey = HotKey(
-    key: PhysicalKeyboardKey.keyC,
-    modifiers: [HotKeyModifier.shift, HotKeyModifier.meta], 
-    scope: HotKeyScope.system,
-  );
-
-  await hotKeyManager.register(
-    captureHotKey,
-    keyDownHandler: (hotKey) async {
-      debugPrint('📸 Kısayol tetiklendi');
-      appState.navigateTo(AppPage.capture);
-      await windowManager.show();
-      await windowManager.focus();
+  final trayService = TrayService();
+  await trayService.initialize(
+    hotkeyLabel: settings.hotkey.displayLabel,
+    onCapture: (CaptureMode mode) async {
+      await captureService.capture(mode);
+    },
+    onSettings: windowService.showSettings,
+    onQuit: () async {
+      await hotkeyService.dispose();
+      await trayService.dispose();
+      await ipcService.dispose();
+      windowService.dispose();
+      await lock.release();
+      exit(0);
     },
   );
 
-  // 3. System Tray (Menü)
-  final SystemTray systemTray = SystemTray();
-  String iconPath = await TrayUtils.getIconPath(); // Asset -> File
+  // Hotkey değişince tray tooltip'i de güncelle.
+  settings.addListener(() {
+    trayService.updateTooltip(settings.hotkey.displayLabel);
+  });
 
-  await systemTray.initSystemTray(
-    title: "Yakala",
-    iconPath: iconPath,
-    toolTip: "Yakala",
-  );
-
-  final Menu menu = Menu();
-  await menu.buildFrom([
-    MenuItemLabel(label: 'Ekranı Yakala', onClicked: (menuItem) async {
-      appState.navigateTo(AppPage.capture);
-      await windowManager.show();
-      await windowManager.focus();
-    }),
-    MenuItemLabel(label: 'Ayarlar', onClicked: (menuItem) async {
-      appState.navigateTo(AppPage.settings);
-      await windowManager.show();
-      await windowManager.focus();
-    }),
-    MenuItemLabel(label: 'Çıkış', onClicked: (menuItem) {
-      exit(0);
-    }),
-  ]);
-
-  await systemTray.setContextMenu(menu);
+  // İlk örnek launcher'dan açıldıysa ayarları göster (runApp sonrası,
+  // widget tree hazır olunca).
+  if (showSettingsRequested) {
+    Future.microtask(windowService.showSettings);
+  }
 
   runApp(
-    ChangeNotifierProvider.value(
-      value: appState,
-      child: const YakalaApp(),
+    MultiProvider(
+      providers: [
+        ChangeNotifierProvider<SettingsProvider>.value(value: settings),
+        ChangeNotifierProvider<RegionSelectorService>.value(value: regionSelector),
+        ChangeNotifierProvider<AnnotationService>.value(value: annotationService),
+        ChangeNotifierProvider<WindowService>.value(value: windowService),
+      ],
+      child: YakalaApp(hotkeyService: hotkeyService),
     ),
   );
 }
 
 class YakalaApp extends StatelessWidget {
-  const YakalaApp({super.key});
+  final HotkeyService hotkeyService;
+
+  const YakalaApp({super.key, required this.hotkeyService});
 
   @override
   Widget build(BuildContext context) {
@@ -98,126 +141,42 @@ class YakalaApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       title: 'Yakala',
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple, brightness: Brightness.dark),
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: Colors.deepPurple,
+          brightness: Brightness.dark,
+        ),
         useMaterial3: true,
-        scaffoldBackgroundColor: Colors.transparent,
       ),
-      home: Consumer<AppState>(
-        builder: (context, appState, child) {
-          switch (appState.currentPage) {
-            case AppPage.settings:
-              return const SettingsPage();
-            case AppPage.capture:
-              return const CaptureScreen();
-            case AppPage.home:
-              return const CaptureScreen();
+      home: Consumer3<RegionSelectorService, AnnotationService, WindowService>(
+        builder: (context, region, annotation, windowService, _) {
+          if (annotation.isActive && annotation.imageBytes != null) {
+            return AnnotationEditor(
+              imageBytes: annotation.imageBytes!,
+              onConfirm: annotation.confirm,
+              onCancel: annotation.cancel,
+            );
           }
+          if (region.isActive && region.backgroundImage != null) {
+            return Scaffold(
+              backgroundColor: Colors.black,
+              body: RegionOverlay(
+                backgroundImage: region.backgroundImage!,
+                imagePixelSize: region.logicalSize ?? const Size(1920, 1080),
+                onConfirm: region.confirm,
+                onCancel: region.cancel,
+              ),
+            );
+          }
+          if (windowService.settingsVisible) {
+            return SettingsPage(
+              hotkeyService: hotkeyService,
+              windowService: windowService,
+            );
+          }
+          // Hiçbir şey aktif değil → görünmez placeholder.
+          // (Pencere zaten gizli olmalı; emin olmak için transparent.)
+          return const ColoredBox(color: Colors.transparent);
         },
-      ),
-    );
-  }
-}
-
-class CaptureScreen extends StatefulWidget {
-  const CaptureScreen({super.key});
-
-  @override
-  State<CaptureScreen> createState() => _CaptureScreenState();
-}
-
-class _CaptureScreenState extends State<CaptureScreen> {
-  String _status = "Kısayol bekleniyor: Cmd+Shift+C";
-
-  Future<void> _captureScreen() async {
-    setState(() => _status = "Ekran Görüntüsü Alınıyor...");
-
-    try {
-      await windowManager.hide();
-      await Future.delayed(const Duration(milliseconds: 300));
-
-      Directory tempDir = await getTemporaryDirectory();
-      String savePath = '${tempDir.path}/yakala_temp_${DateTime.now().millisecondsSinceEpoch}.png';
-
-      CapturedData? capturedData = await screenCapturer.capture(
-        mode: CaptureMode.screen,
-        imagePath: savePath,
-        silent: true,
-      );
-
-      if (capturedData != null && File(savePath).existsSync()) {
-         await ClipboardUtils.copyImageToClipboard(savePath);
-         
-         await windowManager.show();
-         if (mounted) {
-           setState(() {
-             _status = "Görüntü Panoya Kopyalandı! (Cmd+V yap)";
-           });
-         }
-         
-         // 2 saniye sonra otomatik gizle (Opsiyonel, kullanıcı dostu)
-         Future.delayed(const Duration(seconds: 3), () async {
-           if (mounted) await windowManager.hide();
-         });
-         
-      } else {
-        await windowManager.show();
-         if (mounted) setState(() => _status = "Görüntü alınamadı.");
-      }
-    } catch (e) {
-      await windowManager.show();
-      if (mounted) setState(() => _status = "Hata: $e");
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      // ignore: deprecated_member_use
-      backgroundColor: Colors.black.withOpacity(0.85),
-      body: Stack(
-        children: [
-          // Kapat Butonu (Sağ Üst)
-          Positioned(
-            top: 10, right: 10,
-            child: IconButton(
-              icon: const Icon(Icons.close, color: Colors.white54),
-              onPressed: () => windowManager.hide(),
-            ),
-          ),
-          Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const Icon(Icons.camera, size: 80, color: Colors.deepPurpleAccent),
-                const SizedBox(height: 20),
-                Text(
-                  _status,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w300),
-                ),
-                const SizedBox(height: 40),
-                ElevatedButton.icon(
-                  onPressed: _captureScreen,
-                  icon: const Icon(Icons.touch_app),
-                  label: const Text("Şimdi Yakala"),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.deepPurple,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 15),
-                  ),
-                ),
-                const SizedBox(height: 20),
-                TextButton(
-                  onPressed: () {
-                    // Ayarlar'a geçiş butonu
-                    context.read<AppState>().navigateTo(AppPage.settings);
-                  }, 
-                  child: const Text("Ayarlar", style: TextStyle(color: Colors.white54)),
-                )
-              ],
-            ),
-          ),
-        ],
       ),
     );
   }

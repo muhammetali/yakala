@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Yakala
+GenericName=Ekran Yakala
+GenericName[en]=Screen Capture
+Comment=Hızlı ekran yakalama aracı
+Comment[en]=Quick screen capture tool
+Exec=__EXEC__ --settings
+Icon=yakala
+Terminal=false
+Categories=Utility;Graphics;
+StartupNotify=false
+StartupWMClass=yakala
+Keywords=screenshot;screen;capture;ekran;yakala;görüntü;

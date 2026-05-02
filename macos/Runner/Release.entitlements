@@ -2,6 +2,15 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!--
+	  Sandbox kapalı: yakala bir tray uygulaması, /tmp altında Unix domain
+	  socket dinliyor (instance_command_service.dart) ve screen_capturer ile
+	  kullanıcının seçtiği keyfi yola PNG yazıyor. App Sandbox bu dosya
+	  erişimi modeliyle uyumsuz; App Store dağıtımı hedeflenmiyor.
+	  Notarize akışı için Hardened Runtime aktif (Xcode build setting),
+	  ek entitlement gerekmiyor: AOT derleme JIT istemez, third-party
+	  pluginler standart imzalı.
+	-->
 	<key>com.apple.security.app-sandbox</key>
 	<false/>
 </dict>

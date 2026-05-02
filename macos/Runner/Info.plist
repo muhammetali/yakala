@@ -22,11 +22,17 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+	<key>LSUIElement</key>
+	<true/>
 	<key>NSHumanReadableCopyright</key>
 	<string>$(PRODUCT_COPYRIGHT)</string>
 	<key>NSMainNibFile</key>
 	<string>MainMenu</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>Yakala ekran görüntüsü almak için ekranınıza erişim ister.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Yakala bildirim göstermek ve görüntüyü panoya kopyalamak için sistem olaylarını kullanır.</string>
 </dict>
 </plist>
