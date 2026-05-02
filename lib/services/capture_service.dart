@@ -32,18 +32,42 @@ class CaptureService {
     required this.windowService,
   });
 
+  /// Bir capture devam ederken (selection / editor açıkken) ikinci bir
+  /// `capture()` çağrısının re-entry yapıp shared state'i (window overlay,
+  /// OverlayController completer'ları) bozmasını engelleyen mutex.
+  ///
+  /// Concrete senaryo: kullanıcı editor açıkken hotkey'e tekrar basarsa,
+  /// ikinci `_runEditor` `enterOverlay` çağırır + `annotationService.start`
+  /// önceki completer'ı cancel eder. Cancel olan birinci capture'ın `finally`
+  /// bloğu `windowService.exitOverlay()` çalıştırır → ikinci capture'ın yeni
+  /// overlay'i invisible kalır ("editor açılmıyor" semptomu). Mutex bu yarışı
+  /// yapısal olarak imkansız kılar — concurrency contract'ı macOS Screenshot
+  /// / Snipping Tool ile aynı: aynı anda tek capture.
+  bool _inFlight = false;
+
+  /// Test gözlem noktası — `inFlight` durumunda yeni `capture()` çağrılarının
+  /// silently drop edildiğini doğrulamak için.
+  @visibleForTesting
+  bool get inFlight => _inFlight;
+
   Future<CaptureResult> capture(CaptureMode mode) async {
-    debugPrint('[Yakala/Capture] start mode=$mode');
-    if (!await _ensurePermission()) {
-      debugPrint('[Yakala/Capture] permission DENIED');
-      return CaptureResult.failed('izin yok');
+    if (_inFlight) {
+      debugPrint('[Yakala/Capture] reject (already in flight) mode=$mode');
+      return CaptureResult.cancelled();
     }
+    _inFlight = true;
+    debugPrint('[Yakala/Capture] start mode=$mode');
 
-    final timestamp = DateTime.now().millisecondsSinceEpoch;
-    String? capturedPath;
     bool inOverlay = false;
-
     try {
+      if (!await _ensurePermission()) {
+        debugPrint('[Yakala/Capture] permission DENIED');
+        return CaptureResult.failed('izin yok');
+      }
+
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      String? capturedPath;
+
       if (mode == CaptureMode.region) {
         // Region: in-place editor (selection + annotation tek pencerede).
         // showEditorAfterCapture region için her zaman uygulanır (toolbar ekranda).
@@ -77,6 +101,7 @@ class CaptureService {
       if (inOverlay) {
         await windowService.exitOverlay();
       }
+      _inFlight = false;
       debugPrint('[Yakala/Capture] done');
     }
   }

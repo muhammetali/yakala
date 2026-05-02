@@ -7,6 +7,8 @@ import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
 import 'package:image_painter/image_painter.dart';
 
+import 'text_input_dialog.dart';
+
 /// `compute()` argümanı — Rect/Size yerine düz primitives, isolate
 /// transfer'inde tip uyuşmazlığı riskini sıfırlar.
 class _CropArgs {
@@ -685,42 +687,12 @@ class _AnnotationToolbarState extends State<_AnnotationToolbar> {
     );
   }
 
-  Future<String?> _showTextDialog(BuildContext ctx) async {
-    final tc = TextEditingController();
-    final result = await showDialog<String?>(
-      context: ctx,
-      barrierDismissible: false,
-      useRootNavigator: true,
-      builder: (dialogCtx) {
-        return AlertDialog(
-          title: const Text('Metin Ekle'),
-          content: TextField(
-            controller: tc,
-            autofocus: true,
-            maxLines: 3,
-            minLines: 1,
-            textInputAction: TextInputAction.done,
-            decoration: const InputDecoration(
-              hintText: 'Görsele eklenecek metin',
-              border: OutlineInputBorder(),
-            ),
-            onSubmitted: (v) => Navigator.of(dialogCtx).pop(v.trim()),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogCtx).pop(null),
-              child: const Text('İptal'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(dialogCtx).pop(tc.text.trim()),
-              child: const Text('Ekle'),
-            ),
-          ],
-        );
-      },
+  Future<String?> _showTextDialog(BuildContext ctx) {
+    return TextInputDialog.show(
+      ctx,
+      title: 'Metin Ekle',
+      hintText: 'Görsele eklenecek metin',
     );
-    tc.dispose();
-    return result;
   }
 
   @override

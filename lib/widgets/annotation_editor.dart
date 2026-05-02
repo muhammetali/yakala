@@ -4,6 +4,8 @@ import 'package:flutter/services.dart';
 import 'package:gap/gap.dart';
 import 'package:image_painter/image_painter.dart';
 
+import 'text_input_dialog.dart';
+
 /// image_painter paketini saran annotation editor.
 ///
 /// Paketin built-in toolbar'ı (`showControls: true`) yerine kendi araç
@@ -116,16 +118,20 @@ class _AnnotationEditorState extends State<AnnotationEditor> {
   Future<void> _confirm() async {
     if (_exporting) return;
     setState(() => _exporting = true);
+    Uint8List? bytes;
     try {
-      final bytes = await _controller.exportImage();
-      if (bytes == null) {
-        widget.onCancel();
-        return;
-      }
-      widget.onConfirm(bytes);
-    } finally {
-      if (mounted) setState(() => _exporting = false);
+      bytes = await _controller.exportImage();
+    } catch (e, st) {
+      debugPrint('[Yakala/Editor] exportImage HATA: $e\n$st');
     }
+    if (!mounted) return;
+    setState(() => _exporting = false);
+    // exportImage hatasında veya null sonuçta orijinal (annotation'sız)
+    // bytes'a düş — sessizce askıda kalmak AnnotationService completer'ını
+    // hiç çözmez ve CaptureService._inFlight mutex'i app restart'a kadar
+    // tüm yakalamaları bloklar. Hep onConfirm veya onCancel çağrılmalı.
+    bytes ??= widget.imageBytes;
+    widget.onConfirm(bytes);
   }
 
   Future<void> _onToolSelected(PaintMode mode) async {
@@ -160,43 +166,12 @@ class _AnnotationEditorState extends State<AnnotationEditor> {
     }
   }
 
-  Future<String?> _promptForText() async {
-    final textController = TextEditingController();
-    final result = await showDialog<String?>(
-      context: context,
-      barrierDismissible: false,
-      builder: (dialogContext) {
-        return AlertDialog(
-          title: const Text('Metin Ekle'),
-          content: TextField(
-            controller: textController,
-            autofocus: true,
-            maxLines: 3,
-            minLines: 1,
-            textInputAction: TextInputAction.done,
-            decoration: const InputDecoration(
-              hintText: 'Görsele eklenecek metin',
-              border: OutlineInputBorder(),
-            ),
-            onSubmitted: (value) =>
-                Navigator.of(dialogContext).pop(value.trim()),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(null),
-              child: const Text('İptal'),
-            ),
-            FilledButton(
-              onPressed: () =>
-                  Navigator.of(dialogContext).pop(textController.text.trim()),
-              child: const Text('Ekle'),
-            ),
-          ],
-        );
-      },
+  Future<String?> _promptForText() {
+    return TextInputDialog.show(
+      context,
+      title: 'Metin Ekle',
+      hintText: 'Görsele eklenecek metin',
     );
-    textController.dispose();
-    return result;
   }
 
   @override
@@ -431,3 +406,4 @@ class _ToolDef {
   final String label;
   const _ToolDef(this.mode, this.icon, this.label);
 }
+

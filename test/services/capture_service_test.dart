@@ -37,6 +37,76 @@ void main() {
     });
   });
 
+  // Concrete bug: kullanıcı editor açıkken hotkey/tray'a tekrar basarsa
+  // ikinci capture'ın `enterOverlay()` + `annotationService.start()`'ı önceki
+  // completer'ı cancel ediyor; cancel olan birinci capture'ın `finally`
+  // bloğu `windowService.exitOverlay()` çalıştırıp pencereyi gizliyor →
+  // ikinci capture'ın yeni overlay'i invisible kalıyor ("editor açılmıyor").
+  // Mutex bu yarışı yapısal olarak engeller.
+  group('CaptureService re-entry guard (mutex)', () {
+    test('Aynı anda iki capture çağrılırsa ikincisi cancelled döner', () async {
+      if (Platform.isMacOS) return; // izin diyaloğu açabilir
+      final c = await build();
+      expect(c.inFlight, isFalse,
+          reason: 'idle CaptureService inFlight olmamalı');
+
+      // İlk capture'ı await'siz başlat. async fonksiyonu ilk await'e kadar
+      // senkron çalışır → return etmeden ÖNCE _inFlight=true olur.
+      final first = c.capture(CaptureMode.fullScreen);
+      expect(c.inFlight, isTrue,
+          reason: 'capture başlar başlamaz inFlight true olmalı');
+
+      // İkinci capture aynı senkron tick'te başlar → guard reject etmeli.
+      final second = await c.capture(CaptureMode.region);
+      expect(second.isCancelled, isTrue,
+          reason: 'in-flight iken çağrılan ikinci capture cancelled döner');
+      // imagePath boş olmalı — yani gerçek bir capture yapmadı
+      expect(second.imagePath, isNull);
+
+      // Birinci capture kendi haline tamamlansın (mock channel'da capture
+      // null/no-file döndüğü için cancelled bitmeli).
+      final firstResult = await first;
+      expect(firstResult, isNotNull);
+      expect(c.inFlight, isFalse,
+          reason: 'birinci tamamlanınca guard release olur');
+    }, timeout: const Timeout(Duration(seconds: 30)));
+
+    test(
+        'Birinci tamamlandıktan SONRA ikinci capture normal çalışır (guard release)',
+        () async {
+      if (Platform.isMacOS) return;
+      final c = await build();
+      // Birinciyi tamamen bitir
+      await c.capture(CaptureMode.fullScreen);
+      expect(c.inFlight, isFalse);
+
+      // Sonraki capture guard'a takılmamalı — yine bir CaptureResult dönmeli
+      // (mock'ta cancelled olur, önemli olan reject edilmemesi).
+      final second = await c.capture(CaptureMode.fullScreen);
+      expect(second, isNotNull);
+      expect(c.inFlight, isFalse);
+    }, timeout: const Timeout(Duration(seconds: 30)));
+
+    test(
+        'Çoklu re-entry — üç eş zamanlı çağrıda yalnız biri gerçek capture yapar',
+        () async {
+      if (Platform.isMacOS) return;
+      final c = await build();
+      final f1 = c.capture(CaptureMode.fullScreen);
+      final f2 = c.capture(CaptureMode.fullScreen);
+      final f3 = c.capture(CaptureMode.fullScreen);
+
+      final results = await Future.wait([f1, f2, f3]);
+      // Throw yok — hepsi tamamlandı
+      expect(results, hasLength(3));
+      // En az 2'si cancelled olmalı (guard tarafından reject edilen 2 tane)
+      final cancelledCount = results.where((r) => r.isCancelled).length;
+      expect(cancelledCount, greaterThanOrEqualTo(2),
+          reason: 'guard 2 ya da 3 çağrıyı reject etmeli');
+      expect(c.inFlight, isFalse);
+    }, timeout: const Timeout(Duration(seconds: 30)));
+  });
+
   group('CaptureService.capture mode dispatch', () {
     test('Native modlar (fullScreen) — exception fırlatmaz, result döner',
         () async {
