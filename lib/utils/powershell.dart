@@ -23,6 +23,17 @@ class PowerShell {
     '-Command',
   ];
 
+  /// `powershell` çağrısının argüman listesi. Test seam: dependency injection
+  /// olmadan da PowerShell.run/startDetached'in kullanacağı argümanların
+  /// doğru sırada olduğunu unit test'ten doğrulayabilelim diye public.
+  ///
+  /// Sıralama önemli: `-Command` MUTLAKA en sonda olmalı, ondan sonra ilk
+  /// argüman script gövdesi olarak parse edilir. Araya başka flag girerse
+  /// PowerShell script'i flag sanır.
+  static List<String> buildArgs(String script) {
+    return [..._baseFlags, script];
+  }
+
   static Future<ProcessResult> run({
     required String script,
     required Duration timeout,
@@ -30,7 +41,7 @@ class PowerShell {
   }) {
     return Process.run(
       'powershell',
-      [..._baseFlags, script],
+      buildArgs(script),
       environment: environment,
     ).timeout(timeout);
   }
@@ -41,7 +52,7 @@ class PowerShell {
   }) {
     return Process.start(
       'powershell',
-      [..._baseFlags, script],
+      buildArgs(script),
       mode: ProcessStartMode.detached,
       environment: environment,
     );

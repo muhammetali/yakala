@@ -5,9 +5,10 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:yakala/services/instance_command_service.dart';
 
-/// `InstanceCommandService` Unix domain socket tabanlı olduğu için Windows'ta
-/// no-op çalışır; aşağıdaki davranış testleri yalnızca POSIX'te koşar.
-/// `isSupported` getter'ı her platformda doğrulanır.
+/// `InstanceCommandService` Linux/macOS'ta Unix domain socket, Windows'ta
+/// TCP loopback + token kullanır. Davranış testleri (server↔client) yalnızca
+/// POSIX'te koşar; pure helper'lar (token üretimi, handshake parse, client
+/// mesaj parse) her platformda koşar.
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -34,8 +35,104 @@ void main() {
   });
 
   group('InstanceCommandService.isSupported', () {
-    test('Windows dışında true', () {
-      expect(InstanceCommandService.isSupported, isNot(Platform.isWindows));
+    test('Linux/macOS/Windows üçünde de true (Windows TCP loopback ile)', () {
+      expect(InstanceCommandService.isSupported, isTrue);
+    });
+  });
+
+  group('InstanceCommandService.generateToken', () {
+    test('32 karakter uzunluğunda hex string', () {
+      final token = InstanceCommandService.generateToken();
+      expect(token.length, 32);
+      expect(RegExp(r'^[0-9a-f]{32}$').hasMatch(token), isTrue,
+          reason: 'token "$token" hex regex\'e uymadı');
+    });
+
+    test('arka arkaya çağrıldığında farklı tokenlar üretir', () {
+      final tokens = List.generate(10, (_) => InstanceCommandService.generateToken());
+      expect(tokens.toSet().length, 10,
+          reason: 'token tekrarı = entropy yok demek');
+    });
+  });
+
+  group('InstanceCommandService.formatHandshake', () {
+    test('PORT TOKEN newline ile sonlanır', () {
+      final s = InstanceCommandService.formatHandshake(54321, 'abcdef');
+      expect(s, '54321 abcdef\n');
+    });
+
+    test('formatHandshake → parseHandshake round-trip', () {
+      final t = InstanceCommandService.generateToken();
+      final s = InstanceCommandService.formatHandshake(8080, t);
+      final parsed = InstanceCommandService.parseHandshake(s);
+      expect(parsed?.port, 8080);
+      expect(parsed?.token, t);
+    });
+  });
+
+  group('InstanceCommandService.parseHandshake', () {
+    test('geçerli format: PORT TOKEN', () {
+      final p = InstanceCommandService.parseHandshake('45678 abc123');
+      expect(p?.port, 45678);
+      expect(p?.token, 'abc123');
+    });
+
+    test('trailing newline tolere edilir', () {
+      final p = InstanceCommandService.parseHandshake('1234 t\n');
+      expect(p?.port, 1234);
+      expect(p?.token, 't');
+    });
+
+    test('boş string → null', () {
+      expect(InstanceCommandService.parseHandshake(''), isNull);
+      expect(InstanceCommandService.parseHandshake('   '), isNull);
+    });
+
+    test('üç parça → null (format ihlali)', () {
+      expect(
+        InstanceCommandService.parseHandshake('1234 token extra'),
+        isNull,
+      );
+    });
+
+    test('tek parça → null', () {
+      expect(InstanceCommandService.parseHandshake('1234'), isNull);
+    });
+
+    test('port int değil → null', () {
+      expect(InstanceCommandService.parseHandshake('abcd token'), isNull);
+    });
+
+    test('boş token → null', () {
+      expect(InstanceCommandService.parseHandshake('1234 '), isNull);
+    });
+  });
+
+  group('InstanceCommandService.parseClientMessage', () {
+    test('TOKEN COMMAND tek kelime komut', () {
+      final m = InstanceCommandService.parseClientMessage('abc show_settings');
+      expect(m?.token, 'abc');
+      expect(m?.command, 'show_settings');
+    });
+
+    test('TOKEN COMMAND çok kelimeli komut — sadece ilk boşluk ayraç', () {
+      final m = InstanceCommandService.parseClientMessage('tok cmd arg1 arg2');
+      expect(m?.token, 'tok');
+      expect(m?.command, 'cmd arg1 arg2');
+    });
+
+    test('boşluk yok → null (token ile cmd ayrılamaz)', () {
+      expect(InstanceCommandService.parseClientMessage('justtoken'), isNull);
+    });
+
+    test('boş token (mesaj boşlukla başlıyor) → null', () {
+      expect(InstanceCommandService.parseClientMessage(' cmd'), isNull);
+    });
+
+    test('boş command (token sonrası sadece boşluk) → token döner, command boş', () {
+      final m = InstanceCommandService.parseClientMessage('tok ');
+      expect(m?.token, 'tok');
+      expect(m?.command, '');
     });
   });
 
