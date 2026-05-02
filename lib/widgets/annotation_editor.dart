@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:gap/gap.dart';
 import 'package:image_painter/image_painter.dart';
 
@@ -30,19 +31,25 @@ class AnnotationEditor extends StatefulWidget {
 
 class _AnnotationEditorState extends State<AnnotationEditor> {
   late final ImagePainterController _controller;
+  final FocusNode _focus = FocusNode();
   bool _exporting = false;
 
+  // Region overlay'in floating toolbar'ı ile aynı 8 renk — iki editor
+  // arasında tutarlı paleti garanti eder.
   static const List<Color> _palette = [
     Colors.red,
     Colors.orange,
     Colors.yellow,
     Colors.green,
-    Colors.cyan,
     Colors.blue,
     Colors.purple,
     Colors.white,
     Colors.black,
   ];
+
+  // Region overlay'in stroke slider aralığı ile aynı (1-20).
+  static const double _strokeMin = 1;
+  static const double _strokeMax = 20;
 
   static const List<_ToolDef> _tools = [
     _ToolDef(PaintMode.freeStyle, Icons.edit, 'Serbest Çizim'),
@@ -63,14 +70,47 @@ class _AnnotationEditorState extends State<AnnotationEditor> {
       strokeWidth: 4,
       mode: PaintMode.freeStyle,
     );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _focus.requestFocus();
+    });
   }
 
   @override
   void dispose() {
+    _focus.dispose();
     // ImagePainter widget kendi dispose'unda controller'ı dispose ediyor
     // (image_painter v0.7.1 _paint_over_image.dart:439). Burada tekrar
     // çağırmak double-dispose hatası veriyordu.
     super.dispose();
+  }
+
+  KeyEventResult _onKey(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    if (_exporting) return KeyEventResult.ignored;
+
+    if (event.logicalKey == LogicalKeyboardKey.escape) {
+      widget.onCancel();
+      return KeyEventResult.handled;
+    }
+    if (event.logicalKey == LogicalKeyboardKey.enter ||
+        event.logicalKey == LogicalKeyboardKey.numpadEnter) {
+      _confirm();
+      return KeyEventResult.handled;
+    }
+    final pressed = HardwareKeyboard.instance.logicalKeysPressed;
+    final ctrlOrMeta = pressed.contains(LogicalKeyboardKey.controlLeft) ||
+        pressed.contains(LogicalKeyboardKey.controlRight) ||
+        pressed.contains(LogicalKeyboardKey.metaLeft) ||
+        pressed.contains(LogicalKeyboardKey.metaRight);
+    if (ctrlOrMeta && event.logicalKey == LogicalKeyboardKey.keyZ) {
+      if (_controller.paintHistory.isNotEmpty) _controller.undo();
+      return KeyEventResult.handled;
+    }
+    if (ctrlOrMeta && event.logicalKey == LogicalKeyboardKey.keyC) {
+      _confirm();
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
   }
 
   Future<void> _confirm() async {
@@ -162,27 +202,32 @@ class _AnnotationEditorState extends State<AnnotationEditor> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return Scaffold(
-      backgroundColor: Colors.black.withValues(alpha: 0.92),
-      body: SafeArea(
-        child: Column(
-          children: [
-            _buildActionBar(scheme),
-            Expanded(
-              child: Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: ImagePainter.memory(
-                    widget.imageBytes,
-                    controller: _controller,
-                    scalable: true,
-                    showControls: false,
+    return Focus(
+      focusNode: _focus,
+      autofocus: true,
+      onKeyEvent: _onKey,
+      child: Scaffold(
+        backgroundColor: Colors.black.withValues(alpha: 0.92),
+        body: SafeArea(
+          child: Column(
+            children: [
+              _buildActionBar(scheme),
+              Expanded(
+                child: Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: ImagePainter.memory(
+                      widget.imageBytes,
+                      controller: _controller,
+                      scalable: true,
+                      showControls: false,
+                    ),
                   ),
                 ),
               ),
-            ),
-            _buildToolbar(scheme),
-          ],
+              _buildToolbar(scheme),
+            ],
+          ),
         ),
       ),
     );
@@ -209,20 +254,24 @@ class _AnnotationEditorState extends State<AnnotationEditor> {
             ),
           ),
           const Spacer(),
-          ElevatedButton.icon(
-            onPressed: _exporting ? null : _confirm,
-            icon: _exporting
-                ? const SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.check),
-            label: const Text('Bitti'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: scheme.primary,
-              foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+          Tooltip(
+            message: 'Bitti (Enter / ⌘/Ctrl+C)',
+            child: ElevatedButton.icon(
+              onPressed: _exporting ? null : _confirm,
+              icon: _exporting
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.check),
+              label: const Text('Bitti'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: scheme.primary,
+                foregroundColor: Colors.white,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+              ),
             ),
           ),
         ],
@@ -262,7 +311,7 @@ class _AnnotationEditorState extends State<AnnotationEditor> {
                     ),
                     const Gap(12),
                     IconButton(
-                      tooltip: 'Geri Al',
+                      tooltip: 'Geri Al (⌘/Ctrl+Z)',
                       icon: const Icon(Icons.undo, color: Colors.white),
                       onPressed: _controller.paintHistory.isEmpty
                           ? null
@@ -292,9 +341,10 @@ class _AnnotationEditorState extends State<AnnotationEditor> {
                             enabledThumbRadius: 7),
                       ),
                       child: Slider(
-                        min: 1,
-                        max: 24,
-                        value: _controller.strokeWidth.clamp(1, 24),
+                        min: _strokeMin,
+                        max: _strokeMax,
+                        value: _controller.strokeWidth
+                            .clamp(_strokeMin, _strokeMax),
                         activeColor: scheme.primary,
                         inactiveColor: Colors.white24,
                         onChanged: _controller.setStrokeWidth,
