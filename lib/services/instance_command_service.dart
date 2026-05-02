@@ -72,12 +72,29 @@ class InstanceCommandService {
         InternetAddress(path, type: InternetAddressType.unix),
         0,
       );
+      // Soket dosyasını 0600'e kilitle. macOS'ta $TMPDIR zaten user-private
+      // ama Linux'ta /tmp paylaşımlı; aynı makinedeki diğer kullanıcıların
+      // bağlanmasını engelliyoruz. Best-effort — chmod yoksa veya hata
+      // verirse soketi yine de bağlı tutuyoruz.
+      await _restrictUnixSocketPerms(path);
       _sub = _server!.listen(
         (client) => _handleUnixClient(client, onCommand),
         onError: (Object e) => debugPrint('IPC server hatası: $e'),
       );
     } catch (e) {
       debugPrint('IPC server başlatılamadı: $e');
+    }
+  }
+
+  static Future<void> _restrictUnixSocketPerms(String path) async {
+    try {
+      final result = await Process.run('chmod', ['600', path])
+          .timeout(const Duration(seconds: 2));
+      if (result.exitCode != 0) {
+        debugPrint('IPC: chmod 600 başarısız: ${result.stderr}');
+      }
+    } catch (e) {
+      debugPrint('IPC: chmod 600 atlandı: $e');
     }
   }
 
