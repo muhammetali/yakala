@@ -27,10 +27,42 @@ Future<void> main(List<String> args) async {
   // login-time autostart bare çalıştırır → silent tray.
   final showSettingsRequested = args.contains('--settings');
 
+  // GNOME native custom shortcut entegrasyonu için CLI capture flag'leri.
+  // Sebep: Linux'ta iki bilinen bug var:
+  //   1) `hotkey_manager_linux` 0.2.0 native plugin'i `keybinder_bind`
+  //      dönüş değerini kontrol etmiyor — başarısız register Dart'a `true`
+  //      olarak rapor ediliyor (hotkey hiç tetiklenmiyor, kullanıcıya hata
+  //      mesajı yok).
+  //   2) GNOME 46 ubuntu-appindicators extension menü item activation
+  //      sonrası callback dispatch'ini ölü tutuyor — 2. tray click hiç
+  //      Dart'a ulaşmıyor (system_tray ve tray_manager paketlerinin
+  //      ikisi de aynı semptomu yaşıyor; bu paket bug'ı değil, extension
+  //      bug'ı).
+  // Çözüm: GNOME'un kendi shortcut altyapısı (gsettings custom-keybindings)
+  // bu zincirin tamamen dışında çalışıyor → install-launcher.sh registar
+  // ediyor, kullanıcı tuşa bastığında GNOME shell `yakala --capture-*`
+  // komutunu çalıştırıyor, bu süreç IPC ile çalışan instance'a komut
+  // gönderip çıkıyor. Slack/Telegram/Flameshot aynı pattern'i kullanıyor.
+  String? captureRequested;
+  if (args.contains('--capture-fullscreen')) {
+    captureRequested = 'capture_full';
+  } else if (args.contains('--capture-region')) {
+    captureRequested = 'capture_region';
+  } else if (args.contains('--capture-window')) {
+    captureRequested = 'capture_window';
+  }
+
   final lock = SingleInstanceService();
   if (!await lock.acquire()) {
     // Çalışan birinci örneğe ne istediğimizi söyle, sonra çık.
-    final cmd = showSettingsRequested ? 'show_settings' : 'focus';
+    final String cmd;
+    if (captureRequested != null) {
+      cmd = captureRequested;
+    } else if (showSettingsRequested) {
+      cmd = 'show_settings';
+    } else {
+      cmd = 'focus';
+    }
     await InstanceCommandService.sendCommand(cmd);
     exit(0);
   }
@@ -126,6 +158,21 @@ Future<void> main(List<String> args) async {
   // widget tree hazır olunca).
   if (showSettingsRequested) {
     Future.microtask(windowService.showSettings);
+  }
+
+  // İlk örnek capture flag'i ile açıldıysa (instance yokken GNOME shortcut
+  // tetiklendiyse) — startup tamamlanıp services hazır olunca capture'ı
+  // çalıştır. Yaygın senaryo değil (autostart ilk instance'ı çoktan açmış
+  // olmalı) ama kullanıcı manuel olarak `yakala --capture-*` çağırırsa
+  // burası tetikleniyor.
+  if (captureRequested != null) {
+    final mode = switch (captureRequested) {
+      'capture_full' => CaptureMode.fullScreen,
+      'capture_region' => CaptureMode.region,
+      'capture_window' => CaptureMode.window,
+      _ => CaptureMode.fullScreen,
+    };
+    Future.microtask(() => captureService.capture(mode));
   }
 
   runApp(

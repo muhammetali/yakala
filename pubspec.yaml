@@ -37,7 +37,13 @@ dependencies:
   screen_capturer: ^0.2.3
   window_manager: ^0.5.1
   hotkey_manager: ^0.2.3
-  system_tray: ^2.0.3
+  # system_tray (3 yıldır güncellenmemiş) → tray_manager: leanflutter
+  # ekosisteminin aktif bakımdaki tray paketi. system_tray'in Linux
+  # backend'inde "click 1 sonra menü ölü" bug'ı vardı (DBus/AppIndicator
+  # menüyü stale işaretliyor, yeni Menu objesi rebuild ile bile düzelmiyor —
+  # forensic log'la teyitli). tray_manager StatusNotifierItem üzerinden
+  # çalıştığı için aynı zincirde dead-end yaşamıyor.
+  tray_manager: ^0.5.2
   path_provider: ^2.1.5
   provider: ^6.1.5+1
   gap: ^3.0.1

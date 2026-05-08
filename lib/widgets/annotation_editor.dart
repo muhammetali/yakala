@@ -75,15 +75,28 @@ class _AnnotationEditorState extends State<AnnotationEditor> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _focus.requestFocus();
     });
+    // Backstop: aynı sebep RegionOverlay ile (Linux WM frameless overlay'de
+    // Focus widget'ı tetiklenmeyebilir). Esc engine-level yakalanıyor.
+    HardwareKeyboard.instance.addHandler(_globalKeyBackstop);
   }
 
   @override
   void dispose() {
+    HardwareKeyboard.instance.removeHandler(_globalKeyBackstop);
     _focus.dispose();
     // ImagePainter widget kendi dispose'unda controller'ı dispose ediyor
     // (image_painter v0.7.1 _paint_over_image.dart:439). Burada tekrar
     // çağırmak double-dispose hatası veriyordu.
     super.dispose();
+  }
+
+  bool _globalKeyBackstop(KeyEvent event) {
+    if (!mounted || _exporting) return false;
+    if (event is! KeyDownEvent) return false;
+    if (event.logicalKey != LogicalKeyboardKey.escape) return false;
+    debugPrint('[Yakala/Editor] backstop Esc yakalandı');
+    widget.onCancel();
+    return true;
   }
 
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {

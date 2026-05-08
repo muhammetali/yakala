@@ -9,8 +9,19 @@ import 'powershell.dart';
 class SilentCapture {
   static const _shellTimeout = Duration(seconds: 8);
 
+  /// Test seam: production'da `null`. Testler shell-out'u bypass etmek için
+  /// `(_) async => false` (fallback path'i tetikler) veya
+  /// `(path) async { File(path).writeAsBytesSync(...); return true; }` set
+  /// edebilir. CaptureService bunu doğrudan kullanmıyor; bu seam SilentCapture
+  /// üreten kodun production binary'lerini test runner'da çalıştırmasını
+  /// engellemek için.
+  @visibleForTesting
+  static Future<bool> Function(String outputPath)? testOverride;
+
   /// Belirtilen path'e tam ekran PNG yazar. Başarılı olursa true.
   static Future<bool> captureFullScreen(String outputPath) async {
+    final override = testOverride;
+    if (override != null) return override(outputPath);
     if (!isPathSafe(outputPath)) {
       debugPrint('SilentCapture: tehlikeli karakter içeren path reddedildi.');
       return false;

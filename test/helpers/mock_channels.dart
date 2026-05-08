@@ -1,16 +1,30 @@
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:yakala/utils/silent_capture.dart';
+
+/// `window_manager` channel'ına yapılan tüm method call'larının kaydı.
+/// Her test başında list'i `clear()` ile sıfırla, sonra inceleme yap.
+/// Sıralı runner default → race yok ama yine de sequential test yazın.
+final List<String> windowManagerCalls = <String>[];
 
 void setupMockChannels() {
   // TestDefaultBinaryMessengerBinding.instance kullanmadan önce binding garanti.
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  // SilentCapture testlerde gerçek shell-out yapmasın (grim/scrot/import
+  // dev makinede yüklü ise gerçekten ekran çekerdi). Default: başarısız →
+  // CaptureService screen_capturer fallback'ini kullanır, mock zaten orada.
+  SilentCapture.testOverride = (_) async => false;
+
   const windowManagerChannel = MethodChannel('window_manager');
   const screenCapturerChannel = MethodChannel('screen_capturer');
   const hotKeyChannel =
       MethodChannel('dev.leanflutter.plugins/hotkey_manager');
-  const systemTrayChannel = MethodChannel('system_tray');
+  // tray_manager paketinin Linux/macOS/Windows backend'leri bu kanal üzerinden
+  // konuşur (system_tray'den geçiş — bkz. lib/services/tray_service.dart
+  // class docstring'i).
+  const trayManagerChannel = MethodChannel('tray_manager');
   const pathProviderChannel = MethodChannel('plugins.flutter.io/path_provider');
   const launchAtStartupChannel = MethodChannel('launch_at_startup');
   const packageInfoChannel = MethodChannel('dev.fluttercommunity.plus/package_info');
@@ -21,6 +35,7 @@ void setupMockChannels() {
 
   messenger.setMockMethodCallHandler(windowManagerChannel,
       (MethodCall call) async {
+    windowManagerCalls.add(call.method);
     if ([
       'isMinimized',
       'isVisible',
@@ -74,7 +89,7 @@ void setupMockChannels() {
   messenger.setMockMethodCallHandler(
       hotKeyChannel, (MethodCall call) async => null);
   messenger.setMockMethodCallHandler(
-      systemTrayChannel, (MethodCall call) async => null);
+      trayManagerChannel, (MethodCall call) async => null);
   messenger.setMockMethodCallHandler(
       launchAtStartupChannel, (MethodCall call) async => null);
 

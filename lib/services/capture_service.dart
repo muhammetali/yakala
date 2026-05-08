@@ -58,7 +58,6 @@ class CaptureService {
     _inFlight = true;
     debugPrint('[Yakala/Capture] start mode=$mode');
 
-    bool inOverlay = false;
     try {
       if (!await _ensurePermission()) {
         debugPrint('[Yakala/Capture] permission DENIED');
@@ -76,7 +75,6 @@ class CaptureService {
           debugPrint('[Yakala/Capture] region cancelled');
           return CaptureResult.cancelled();
         }
-        inOverlay = true;
       } else {
         capturedPath = await _captureNative(mode, timestamp);
         if (capturedPath == null) {
@@ -87,7 +85,6 @@ class CaptureService {
         // Non-region modes: opsiyonel full-screen editor
         if (settings.showEditorAfterCapture) {
           capturedPath = await _runEditor(capturedPath, timestamp);
-          inOverlay = true;
           if (capturedPath == null) {
             debugPrint('[Yakala/Capture] editor cancelled');
             return CaptureResult.cancelled();
@@ -98,7 +95,14 @@ class CaptureService {
       debugPrint('[Yakala/Capture] finalize path=$capturedPath');
       return await _finalize(capturedPath, timestamp);
     } finally {
-      if (inOverlay) {
+      // Source of truth: pencere overlay mode'da mı? Lokal "inOverlay" bool
+      // tutmaya çalışmak hatalıydı — region cancel akışında atama satırına
+      // ulaşılmadan return edildiği için exitOverlay çağrılmıyor, pencere
+      // fullscreen overlay'de takılı kalıyordu (kullanıcı Alt+F4 ile çıkmak
+      // zorunda kalıyordu). Şimdi WindowService'in kendi state'ini sorguluyoruz;
+      // _selectRegion / _runEditor enterOverlay çağırdıysa flag true olur.
+      // _inFlight mutex'i zaten concurrent capture'ı engelliyor → race yok.
+      if (windowService.inOverlayMode) {
         await windowService.exitOverlay();
       }
       _inFlight = false;
@@ -126,9 +130,34 @@ class CaptureService {
   }
 
   /// Native yakalama (fullScreen / window). Başarılıysa path, iptal/hata ise null döner.
+  ///
+  /// **fullScreen** modu için önce `SilentCapture` denenir (grim / scrot /
+  /// import on Linux, `screencapture -x` on macOS, PowerShell on Windows).
+  /// `screen_capturer` paketinin Linux backend'i `gnome-screenshot`'a DBus
+  /// üzerinden sinyal gönderiyor; pencere `windowManager.hide()` ile gizli
+  /// iken bu yol fragile (flash + bazı GTK/Wayland sürümlerinde kuyruk
+  /// asılı kalıyor). SilentCapture saf shell-out — DBus, dart:ui veya WM
+  /// state'i hiç dokunmuyor → arka planda da güvenilir. Sadece SilentCapture
+  /// başarısız olursa (paket yok, izin yok) screen_capturer fallback.
+  ///
+  /// **window** modu interaktif — kullanıcının pencere seçmesi gerekiyor.
+  /// SilentCapture buna uygun değil; her platformda screen_capturer'ı
+  /// (macOS `screencapture -w`, Linux `gnome-screenshot --window`,
+  /// Windows native picker) doğrudan kullanırız.
   Future<String?> _captureNative(CaptureMode mode, int timestamp) async {
     final tempDir = await getTemporaryDirectory();
     final tempPath = p.join(tempDir.path, 'yakala_$timestamp.png');
+
+    if (mode == CaptureMode.fullScreen) {
+      final ok = await SilentCapture.captureFullScreen(tempPath);
+      if (ok) {
+        debugPrint('[Yakala/Capture] fullScreen via SilentCapture');
+        return tempPath;
+      }
+      debugPrint(
+        '[Yakala/Capture] SilentCapture başarısız, screen_capturer fallback',
+      );
+    }
 
     sc.CapturedData? captured;
     try {

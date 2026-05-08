@@ -7,7 +7,7 @@ list(APPEND FLUTTER_PLUGIN_LIST
   hotkey_manager_windows
   screen_capturer_windows
   screen_retriever_windows
-  system_tray
+  tray_manager
   window_manager
 )
 

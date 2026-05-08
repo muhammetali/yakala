@@ -118,14 +118,36 @@ class _RegionOverlayState extends State<RegionOverlay> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _focus.requestFocus();
     });
+    // Backstop: Linux'ta frameless+alwaysOnTop+fullscreen overlay'de
+    // `Focus(autofocus: true)` widget'ı bazen tetiklenmiyor (WM focus akışı
+    // Flutter focus tree'sine yansımıyor). Engine seviyesinde global key
+    // handler ekleyerek Esc'i her durumda yakalıyoruz. `cancel()` /
+    // `confirm()` `isCompleted` check'i ile idempotent — Focus widget de
+    // aynı eventi alırsa second call no-op.
+    HardwareKeyboard.instance.addHandler(_globalKeyBackstop);
   }
 
   @override
   void dispose() {
+    HardwareKeyboard.instance.removeHandler(_globalKeyBackstop);
     _focus.dispose();
     // _annotCtrl: ImagePainter widget'ı kendi dispose'unda controller'ı dispose
     // ediyor (image_painter v0.7.1). Burada elle dispose edersek double-dispose.
     super.dispose();
+  }
+
+  /// Engine-level key backstop. Sadece Esc'e bakar, diğer tuşları Focus
+  /// widget'ına bırakır (false döner). Esc handle edildiğinde true döner;
+  /// bu Focus tree dispatch'ini durdurur, double-fire olmaz.
+  bool _globalKeyBackstop(KeyEvent event) {
+    if (!mounted) return false;
+    if (event is! KeyDownEvent) return false;
+    if (event.logicalKey != LogicalKeyboardKey.escape) return false;
+    debugPrint('[Yakala/RegionOverlay] backstop Esc yakalandı (phase=$_phase)');
+    // _onKey ile aynı: Esc her durumda cancel. Çift-fire risk ı yok çünkü
+    // OverlayController.cancel `isCompleted` check'i ile idempotent.
+    widget.onCancel();
+    return true;
   }
 
   // ───────────────────────── Selection (Phase 1) ─────────────────────────
@@ -360,11 +382,13 @@ class _RegionOverlayState extends State<RegionOverlay> {
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
     if (event is! KeyDownEvent) return KeyEventResult.ignored;
     if (event.logicalKey == LogicalKeyboardKey.escape) {
-      if (_phase == _Phase.annotating) {
-        _backToSelecting();
-      } else {
-        widget.onCancel();
-      }
+      // Esc her durumda cancel — kullanıcı standart davranış bekliyor (macOS
+      // Screenshot, Snipping Tool, Greenshot hepsi böyle). Annotating phase'de
+      // "selecting'e dön" için toolbar'daki kırp ikonu (`onBack`) var.
+      // Bu aynı zamanda backstop ile potansiyel çift-fire'ı idempotent yapıyor:
+      // hem _onKey hem backstop cancel çağırırsa, OverlayController'ın
+      // `isCompleted` check'i ile ikincisi no-op olur.
+      widget.onCancel();
       return KeyEventResult.handled;
     }
     if (event.logicalKey == LogicalKeyboardKey.enter ||

@@ -290,6 +290,65 @@ if command -v gtk-update-icon-cache >/dev/null 2>&1; then
   gtk-update-icon-cache -t "$HICOLOR" >/dev/null 2>&1 || true
 fi
 
+# --- GNOME native custom shortcut --------------------------------------------
+# Linux'ta hotkey_manager paketi keybinder-3.0 üzerinden çalışır; GNOME 46 X11
+# oturumunda `keybinder_bind` sessizce başarısız olabiliyor (paketin native
+# kodu dönüş değerini kontrol etmiyor → kullanıcıya UYARI gitmiyor, hotkey
+# hiç tetiklenmiyor). Aynı zamanda ubuntu-appindicators extension'ı tray
+# callback dispatch'ini menu activation sonrası ölü tutuyor.
+#
+# Çözüm: GNOME'un kendi custom-keybindings altyapısı bu zincirin dışında.
+# `gsettings` ile Super+Shift+C → `yakala --capture-fullscreen` tanımlıyoruz;
+# tuşa bastığında gnome-shell yakala'yı çağırıyor, IPC ile çalışan instance
+# capture başlatıyor.
+register_gnome_shortcut() {
+  if ! command -v gsettings >/dev/null 2>&1; then
+    echo "gsettings bulunamadı — sistem kısayolu kaydı atlandı (GNOME değil)."
+    return 0
+  fi
+  # GNOME / Cinnamon / Budgie hepsi gsettings ile aynı şemayı paylaşır.
+  # XDG_CURRENT_DESKTOP = "ubuntu:GNOME", "GNOME", "X-Cinnamon", "Budgie:GNOME"...
+  local desk="${XDG_CURRENT_DESKTOP:-}"
+  if [[ "${desk^^}" != *"GNOME"* ]] \
+     && [[ "${desk^^}" != *"CINNAMON"* ]] \
+     && [[ "${desk^^}" != *"BUDGIE"* ]] \
+     && [[ "${desk^^}" != *"UNITY"* ]]; then
+    echo "Masaüstü ortamı GNOME tabanlı değil ($desk) — sistem kısayolu kaydı atlandı."
+    echo "Klavye kısayolunu masaüstü ortamınızdan elle tanımlayın:"
+    echo "  Komut : $INSTALLED_BINARY --capture-fullscreen"
+    echo "  Önerilen tuş: Super+Shift+C"
+    return 0
+  fi
+
+  local kb_path="/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/yakala-capture/"
+  local kb_schema="org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:$kb_path"
+  local list_schema="org.gnome.settings-daemon.plugins.media-keys"
+
+  # Mevcut listeyi al — boş ise '[]' veya '@as []' döner.
+  local existing
+  existing=$(gsettings get "$list_schema" custom-keybindings 2>/dev/null || echo "[]")
+
+  # Kendi path'imiz listede yoksa ekle.
+  if [[ "$existing" != *"$kb_path"* ]]; then
+    if [[ "$existing" == "[]" ]] || [[ "$existing" == "@as []" ]]; then
+      gsettings set "$list_schema" custom-keybindings "['$kb_path']" || true
+    else
+      # 'sondaki ]' yerine ', '$kb_path']' — basit string sürçme yeterli.
+      local new="${existing%]}, '$kb_path']"
+      gsettings set "$list_schema" custom-keybindings "$new" || true
+    fi
+  fi
+
+  # Shortcut özellikleri.
+  gsettings set "$kb_schema" name 'Yakala — Tam Ekran' || true
+  gsettings set "$kb_schema" command "$INSTALLED_BINARY --capture-fullscreen" || true
+  gsettings set "$kb_schema" binding '<Super><Shift>c' || true
+
+  echo "GNOME kısayolu kaydedildi: Super+Shift+C → yakala --capture-fullscreen"
+}
+
+register_gnome_shortcut
+
 cat <<EOF
 Yakala kuruldu.
 
@@ -298,6 +357,7 @@ Yakala kuruldu.
   İkon 32  : $HICOLOR/32x32/apps/yakala.png
   İkon 256 : $HICOLOR/256x256/apps/yakala.png
   Exec     : $INSTALLED_BINARY --settings
+  Kısayol  : Super+Shift+C (GNOME custom shortcut → tam ekran yakalama)
 
 Programlar menüsünde "Yakala" adıyla görünmesi 1-2 saniye sürebilir.
 Artık 'flutter clean' launcher'ı kırmaz; tekrar kurmak için bu betiği
@@ -307,4 +367,6 @@ Kaldırmak için:
   rm -rf "$INSTALL_DIR"
   rm "$DESKTOP_FILE"
   rm -f "$HICOLOR/32x32/apps/yakala.png" "$HICOLOR/256x256/apps/yakala.png"
+  # GNOME kısayolu da silmek isterseniz:
+  # gsettings reset org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/yakala-capture/ name
 EOF
