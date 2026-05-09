@@ -4,10 +4,7 @@
 
 list(APPEND FLUTTER_PLUGIN_LIST
   file_selector_linux
-  hotkey_manager_linux
-  screen_capturer_linux
   screen_retriever_linux
-  tray_manager
   window_manager
 )
 

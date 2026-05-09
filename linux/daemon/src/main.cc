@@ -27,6 +27,9 @@
 
 #include <gtk/gtk.h>
 
+#include <sys/socket.h>
+#include <sys/un.h>
+
 #include "capture_orchestrator.hh"
 #include "ipc_server.hh"
 #include "logger.hh"
@@ -57,6 +60,43 @@ void on_sigchld(int /*sig*/) {
   while (waitpid(-1, nullptr, WNOHANG) > 0) {
     // reaped — pid'i log'lamayı async-safe olmadığı için atlıyoruz.
   }
+}
+
+// Çalışan daemon'a JSON line-delimited komut gönderir. Başarılı ise true.
+// CLI client mode için (örn. `yakala-daemon --capture-fullscreen` çağrısı
+// GNOME shortcut'tan).
+bool send_ipc_command(const std::string& cmd) {
+  const fs::path socket_path = IpcServer::resolve_socket_path();
+  std::error_code ec;
+  if (!fs::exists(socket_path, ec) || ec) {
+    std::fprintf(stderr,
+                 "yakala-daemon: çalışan daemon yok (socket: %s)\n",
+                 socket_path.c_str());
+    return false;
+  }
+  const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+  if (fd < 0) return false;
+
+  struct sockaddr_un addr{};
+  addr.sun_family = AF_UNIX;
+  std::strncpy(addr.sun_path, socket_path.c_str(), sizeof(addr.sun_path) - 1);
+  if (::connect(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) != 0) {
+    std::fprintf(stderr, "yakala-daemon: connect başarısız: %s\n",
+                 std::strerror(errno));
+    ::close(fd);
+    return false;
+  }
+
+  // JSON: {"cmd":"capture_full"}\n
+  const std::string msg = "{\"cmd\":\"" + cmd + "\"}\n";
+  const ssize_t n = ::send(fd, msg.data(), msg.size(), 0);
+  ::close(fd);
+  if (n < 0 || static_cast<size_t>(n) != msg.size()) {
+    std::fprintf(stderr, "yakala-daemon: send eksik: %zd / %zu\n",
+                 n, msg.size());
+    return false;
+  }
+  return true;
 }
 
 // Tray icon dosyasının yolu. install-launcher.sh tarafından
@@ -90,11 +130,51 @@ fs::path resolve_icon_path() {
 }  // namespace
 
 int main(int argc, char** argv) {
+  Logger::init();
+
+  // CLI client mode: kullanıcı `yakala-daemon --capture-*` çağırırsa
+  // (GNOME shortcut, manuel script vs.), çalışan daemon'a IPC üzerinden
+  // komut gönder ve çık. Daemon mode'a geçmez. Industrial pattern: aynı
+  // binary client+server (git, docker daemon ile aynı yaklaşım).
+  for (int i = 1; i < argc; ++i) {
+    const std::string arg = argv[i];
+    if (arg == "--capture-fullscreen") {
+      return send_ipc_command("capture_full") ? 0 : 1;
+    }
+    if (arg == "--capture-region") {
+      return send_ipc_command("capture_region") ? 0 : 1;
+    }
+    if (arg == "--capture-window") {
+      return send_ipc_command("capture_window") ? 0 : 1;
+    }
+    if (arg == "--show-settings") {
+      return send_ipc_command("show_settings") ? 0 : 1;
+    }
+    if (arg == "--ping") {
+      return send_ipc_command("ping") ? 0 : 1;
+    }
+    if (arg == "--help" || arg == "-h") {
+      std::printf(
+          "yakala-daemon — Yakala native daemon (tray + IPC + capture)\n"
+          "Kullanım:\n"
+          "  yakala-daemon                        # daemon mode (autostart)\n"
+          "  yakala-daemon --capture-fullscreen   # IPC: tam ekran yakala\n"
+          "  yakala-daemon --capture-region       # IPC: bölge yakala\n"
+          "  yakala-daemon --capture-window       # IPC: pencere yakala\n"
+          "  yakala-daemon --show-settings        # IPC: ayarları aç\n"
+          "  yakala-daemon --ping                 # daemon canlı mı (exit 0/1)\n"
+          "Env:\n"
+          "  YAKALA_LOG=debug|info|warn|error     # log seviyesi\n"
+          "  YAKALA_UI=<path>                     # UI binary override\n"
+          "  YAKALA_ICON=<path>                   # tray icon override\n");
+      return 0;
+    }
+  }
+
   // GTK init — argc/argv'yi düzeltebiliyor.
   gtk_init(&argc, &argv);
 
-  Logger::init();
-  YAKALA_LOG_INFO("main") << "yakala-daemon başlıyor (faz 1 MVP)";
+  YAKALA_LOG_INFO("main") << "yakala-daemon başlıyor (faz 2)";
 
   // Single-instance kontrolü: socket'e ping at, cevap geliyorsa başka
   // daemon çalışıyor → sessizce çık (autostart + manuel başlatma çift-tray
