@@ -52,6 +52,11 @@ add_executable(yakala-daemon
   src/ipc_server.cc
   src/ui_spawner.cc
   src/tray.cc
+  src/process_runner.cc
+  src/capture.cc
+  src/clipboard.cc
+  src/notification.cc
+  src/capture_orchestrator.cc
 )
 
 target_include_directories(yakala-daemon PRIVATE

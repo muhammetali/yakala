@@ -55,6 +55,13 @@ public:
   // Socket path — install ve troubleshooting için public.
   static std::filesystem::path resolve_socket_path();
 
+  // Çalışan başka bir daemon var mı? Socket'e connect deneme yapar:
+  //   - Connect başarılı → başka instance var → true.
+  //   - Connect ECONNREFUSED → stale socket dosyası → false.
+  //   - Socket dosyası yok → false.
+  // Daemon main()'in başında çağrılır — varsa çık (çift-tray engelleme).
+  static bool another_instance_running();
+
 private:
   // glib callback'leri — static çünkü C API.
   static gboolean on_incoming_static(GSocketService* service,

@@ -27,6 +27,7 @@
 
 #include <gtk/gtk.h>
 
+#include "capture_orchestrator.hh"
 #include "ipc_server.hh"
 #include "logger.hh"
 #include "settings_loader.hh"
@@ -95,6 +96,14 @@ int main(int argc, char** argv) {
   Logger::init();
   YAKALA_LOG_INFO("main") << "yakala-daemon başlıyor (faz 1 MVP)";
 
+  // Single-instance kontrolü: socket'e ping at, cevap geliyorsa başka
+  // daemon çalışıyor → sessizce çık (autostart + manuel başlatma çift-tray
+  // semptomu engellenir).
+  if (IpcServer::another_instance_running()) {
+    YAKALA_LOG_INFO("main") << "başka bir daemon zaten çalışıyor, çıkılıyor";
+    return 0;
+  }
+
   // Sinyal handler'ları.
   std::signal(SIGINT, on_signal_quit);
   std::signal(SIGTERM, on_signal_quit);
@@ -116,69 +125,71 @@ int main(int argc, char** argv) {
       << "settings yüklendi (mode="
       << settings_loader.current().default_capture_mode << ")";
 
-  // UI spawner — yakala-ui binary path lazy resolve.
+  // UI spawner — yakala-ui binary path lazy resolve. Settings için kullanılır;
+  // capture editor flow Faz 3'te eklenecek.
   UiSpawner ui_spawner;
+
+  // Capture orchestrator — native capture + clipboard + notification akışını
+  // sahiplenir. Tray click ve IPC capture command her ikisi de buna delege
+  // eder.
+  CaptureOrchestrator orchestrator(settings_loader);
 
   // Tray.
   Tray tray;
   const fs::path icon = resolve_icon_path();
   tray.init(icon.string(), "Yakala",
-            [&ui_spawner, &settings_loader](TrayAction action) {
+            [&ui_spawner, &orchestrator](TrayAction action) {
               switch (action) {
                 case TrayAction::kCaptureFullScreen:
-                  // Faz 1: capture flow henüz native değil — UI'ye delege ediyoruz.
-                  // Faz 2'de buradan direkt native capture trigger olacak.
-                  ui_spawner.spawn({"--mode=capture", "--capture=fullScreen"});
+                  orchestrator.run(CaptureOrchestrator::Mode::kFullScreen);
                   break;
                 case TrayAction::kCaptureRegion:
-                  ui_spawner.spawn({"--mode=capture", "--capture=region"});
+                  orchestrator.run(CaptureOrchestrator::Mode::kRegion);
                   break;
                 case TrayAction::kCaptureWindow:
-                  ui_spawner.spawn({"--mode=capture", "--capture=window"});
+                  orchestrator.run(CaptureOrchestrator::Mode::kWindow);
                   break;
                 case TrayAction::kOpenSettings:
-                  ui_spawner.spawn({"--mode=settings"});
+                  ui_spawner.spawn({"--settings"});
                   break;
                 case TrayAction::kQuit:
                   if (g_main_loop) g_main_loop_quit(g_main_loop);
                   break;
               }
-              (void)settings_loader;
             });
 
-  // IPC server.
+  // IPC server — GNOME custom shortcut ve UI binary'sinin daemon'a
+  // mesaj göndermek için kullandığı kanal.
   IpcServer ipc;
-  ipc.start([&ui_spawner, &settings_loader](std::string_view cmd,
-                                            std::string_view body) {
+  ipc.start([&ui_spawner, &orchestrator](std::string_view cmd,
+                                         std::string_view body) {
     YAKALA_LOG_INFO("ipc") << "cmd=" << std::string(cmd);
     if (cmd == "ping") {
-      // Ping cevabı için response channel henüz yok — ileride 2-yönlü
-      // protokol olduğunda buraya eklenecek.
       return;
     }
     if (cmd == "show_settings") {
-      ui_spawner.spawn({"--mode=settings"});
+      ui_spawner.spawn({"--settings"});
       return;
     }
     if (cmd == "capture_full" || cmd == "capture-fullscreen") {
-      ui_spawner.spawn({"--mode=capture", "--capture=fullScreen"});
+      orchestrator.run(CaptureOrchestrator::Mode::kFullScreen);
       return;
     }
     if (cmd == "capture_region" || cmd == "capture-region") {
-      ui_spawner.spawn({"--mode=capture", "--capture=region"});
+      orchestrator.run(CaptureOrchestrator::Mode::kRegion);
       return;
     }
     if (cmd == "capture_window" || cmd == "capture-window") {
-      ui_spawner.spawn({"--mode=capture", "--capture=window"});
+      orchestrator.run(CaptureOrchestrator::Mode::kWindow);
       return;
     }
     if (cmd == "ui_result") {
-      // Faz 2/3'te: UI'den dönen sonuç — clipboard/disk/notification yapacak.
+      // Faz 3'te: UI editor sonucu — daemon clipboard'a UI'nin döndüğü path'i
+      // yansıtacak.
       YAKALA_LOG_DEBUG("ipc") << "ui_result body=" << std::string(body);
       return;
     }
     YAKALA_LOG_WARN("ipc") << "bilinmeyen cmd=" << std::string(cmd);
-    (void)settings_loader;
   });
 
   // Main loop.

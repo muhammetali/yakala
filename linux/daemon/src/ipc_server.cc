@@ -5,8 +5,10 @@
 #include <cstring>
 #include <stdexcept>
 #include <system_error>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 #include <gio/gio.h>
@@ -25,6 +27,29 @@ IpcServer::IpcServer() = default;
 
 IpcServer::~IpcServer() {
   stop();
+}
+
+bool IpcServer::another_instance_running() {
+  const fs::path sock_path = resolve_socket_path();
+  std::error_code ec;
+  if (!fs::exists(sock_path, ec) || ec) {
+    return false;
+  }
+  // Connect denemesi — başarılı ise başka daemon çalışıyor.
+  // Industrial pattern: SOCK_STREAM connect ECONNREFUSED dönerse stale.
+  const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+  if (fd < 0) {
+    return false;  // emin değiliz, fail-open
+  }
+  struct sockaddr_un addr{};
+  addr.sun_family = AF_UNIX;
+  std::strncpy(addr.sun_path,
+               sock_path.c_str(),
+               sizeof(addr.sun_path) - 1);
+  const int rc = ::connect(fd, reinterpret_cast<struct sockaddr*>(&addr),
+                           sizeof(addr));
+  ::close(fd);
+  return rc == 0;
 }
 
 fs::path IpcServer::resolve_socket_path() {
