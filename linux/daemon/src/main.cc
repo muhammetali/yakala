@@ -51,16 +51,8 @@ void on_signal_quit(int sig) {
   }
 }
 
-// SIGCHLD handler — UI subprocess'leri reap eder. Aksi halde zombie
-// process'ler birikiyor, ilk kullanıcı görmüyor ama uzun-yaşayan daemon'da
-// bug.
-void on_sigchld(int /*sig*/) {
-  // signal handler içinde async-signal-safe API'ler dışında bir şey
-  // çağrılmamalı. waitpid AS-safe.
-  while (waitpid(-1, nullptr, WNOHANG) > 0) {
-    // reaped — pid'i log'lamayı async-safe olmadığı için atlıyoruz.
-  }
-}
+// (Eski SIGCHLD handler kaldırıldı — bkz. main() içindeki yorum: GLib reap
+// eder.)
 
 // Çalışan daemon'a JSON line-delimited komut gönderir. Başarılı ise true.
 // CLI client mode için (örn. `yakala-daemon --capture-fullscreen` çağrısı
@@ -187,12 +179,11 @@ int main(int argc, char** argv) {
   // Sinyal handler'ları.
   std::signal(SIGINT, on_signal_quit);
   std::signal(SIGTERM, on_signal_quit);
-  // SIGCHLD — sigaction ile, SA_RESTART + SA_NOCLDSTOP.
-  struct sigaction sa_chld{};
-  sa_chld.sa_handler = on_sigchld;
-  sigemptyset(&sa_chld.sa_mask);
-  sa_chld.sa_flags = SA_RESTART | SA_NOCLDSTOP;
-  sigaction(SIGCHLD, &sa_chld, nullptr);
+  // **SIGCHLD: kasıtlı olarak set ETMİYORUZ.** GLib (g_subprocess_wait_async,
+  // g_child_watch) child reap'i kendi yönetir. Custom SIGCHLD handler
+  // glib'in waitpid çağrılarıyla yarışıyordu — "No child processes" hataları
+  // oluşturuyordu. UI ve clipboard/notification process'leri GSubprocess
+  // üzerinden spawn ediliyor → glib reap eder.
 
   // SIGPIPE — IPC client client side close ettikten sonra write yaparsak
   // SIGPIPE alıyoruz; daemon'u öldürmemeli.
@@ -209,10 +200,10 @@ int main(int argc, char** argv) {
   // capture editor flow Faz 3'te eklenecek.
   UiSpawner ui_spawner;
 
-  // Capture orchestrator — native capture + clipboard + notification akışını
-  // sahiplenir. Tray click ve IPC capture command her ikisi de buna delege
-  // eder.
-  CaptureOrchestrator orchestrator(settings_loader);
+  // Capture orchestrator — native capture + (opsiyonel) UI editor/region +
+  // clipboard + notification akışını sahiplenir. UiSpawner aracılığıyla
+  // yakala-ui'yi async spawn eder.
+  CaptureOrchestrator orchestrator(settings_loader, ui_spawner);
 
   // Tray.
   Tray tray;
@@ -229,9 +220,14 @@ int main(int argc, char** argv) {
                 case TrayAction::kCaptureWindow:
                   orchestrator.run(CaptureOrchestrator::Mode::kWindow);
                   break;
-                case TrayAction::kOpenSettings:
-                  ui_spawner.spawn({"--settings"});
+                case TrayAction::kOpenSettings: {
+                  // Settings UI'yi fire-and-forget spawn et — exit'i
+                  // beklemiyoruz. GSubprocess ref'ini bırakırsak GLib
+                  // reap eder.
+                  GSubprocess* proc = ui_spawner.spawn({"--mode=settings"});
+                  if (proc) g_object_unref(proc);
                   break;
+                }
                 case TrayAction::kQuit:
                   if (g_main_loop) g_main_loop_quit(g_main_loop);
                   break;
@@ -248,7 +244,8 @@ int main(int argc, char** argv) {
       return;
     }
     if (cmd == "show_settings") {
-      ui_spawner.spawn({"--settings"});
+      GSubprocess* proc = ui_spawner.spawn({"--mode=settings"});
+      if (proc) g_object_unref(proc);
       return;
     }
     if (cmd == "capture_full" || cmd == "capture-fullscreen") {

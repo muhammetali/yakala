@@ -4,23 +4,29 @@
 #include <string>
 #include <vector>
 
+#include <gio/gio.h>
+
 namespace yakala::daemon {
 
-// Flutter UI binary'sini spawn eder. Daemon UI'nin exit code'unu beklemez —
-// fire-and-forget. UI işini bitirince IPC üzerinden sonuç gönderir.
+// Flutter UI binary'sini spawn eder. GSubprocess kullanır — SIGCHLD'i
+// GLib main loop yönetir, bizim sigaction handler'ı koymamız gerek yok
+// (custom handler g_child_watch_add ile çakışıyordu).
+//
+// `spawn` GSubprocess* döner — caller `g_object_ref` alıp
+// `g_subprocess_wait_async` ile child exit'i izleyebilir. Caller bitirince
+// `g_object_unref` ile bırakır.
 class UiSpawner {
 public:
   UiSpawner();
 
-  // UI binary'sinin yolunu çözer. Önce env (`YAKALA_UI`), sonra daemon binary
-  // ile aynı dizindeki `yakala-ui`, sonra PATH lookup.
+  // UI binary path'ini çözer (cached). Override env > /proc/self/exe parent
+  // > PATH lookup.
   std::filesystem::path resolve_binary_path() const;
 
   // UI'yi spawn eder. argv[0] otomatik atanır; çağıran sadece flag'leri verir.
-  // Ör: `spawn({"--mode=editor", "--input=/tmp/foo.png"})`.
-  // Returns: child PID, ya da spawn başarısızsa -1.
-  // Industrial pattern: fork+execvp + parent SIGCHLD ile reap eder.
-  int spawn(const std::vector<std::string>& args) const;
+  // **Returns**: GSubprocess* (caller bir ref sahibi olur — `g_object_unref`
+  // ile bırakmak gerek). Spawn fail → nullptr.
+  GSubprocess* spawn(const std::vector<std::string>& args) const;
 
   // Test/debug için path override.
   void set_binary_path(std::filesystem::path path);

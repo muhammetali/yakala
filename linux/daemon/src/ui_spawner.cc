@@ -4,8 +4,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <unistd.h>
-#include <sys/types.h>
-#include <sys/wait.h>
 
 #include "logger.hh"
 
@@ -33,58 +31,46 @@ fs::path UiSpawner::resolve_binary_path() const {
   fs::path self = fs::read_symlink("/proc/self/exe", ec);
   if (!ec && !self.empty()) {
     fs::path candidate = self.parent_path() / "yakala-ui";
-    if (fs::exists(candidate, ec) && !ec) {
-      return candidate;
-    }
-    // Fallback: `yakala` adı (refactor öncesi binary).
+    if (fs::exists(candidate, ec) && !ec) return candidate;
+    // Fallback (eski install dosya adı).
     candidate = self.parent_path() / "yakala";
-    if (fs::exists(candidate, ec) && !ec) {
-      return candidate;
-    }
+    if (fs::exists(candidate, ec) && !ec) return candidate;
   }
 
-  // 3) PATH lookup — execvp halletsin diye sadece ismi dön.
+  // 3) PATH lookup.
   return fs::path("yakala-ui");
 }
 
-int UiSpawner::spawn(const std::vector<std::string>& args) const {
+GSubprocess* UiSpawner::spawn(const std::vector<std::string>& args) const {
   const fs::path bin = resolve_binary_path();
-
-  // argv inşası — execvp char* dizisi ister, terminator nullptr.
-  std::vector<char*> argv;
   std::string bin_str = bin.string();
-  argv.push_back(const_cast<char*>(bin_str.c_str()));
-  for (const auto& arg : args) {
-    argv.push_back(const_cast<char*>(arg.c_str()));
-  }
-  argv.push_back(nullptr);
 
+  std::vector<gchar*> pointers;
+  pointers.reserve(args.size() + 2);
+  pointers.push_back(const_cast<gchar*>(bin_str.c_str()));
+  for (const auto& a : args) {
+    pointers.push_back(const_cast<gchar*>(a.c_str()));
+  }
+  pointers.push_back(nullptr);
+
+  // STDIN_INHERIT yeterli — stdout/stderr default'ta inherit eder (parent
+  // fd'leri kalır). Bu sayede UI'nin debugPrint çıktıları daemon log'una
+  // akar (debug için faydalı).
+  GError* err = nullptr;
+  GSubprocess* proc = g_subprocess_newv(
+      pointers.data(),
+      G_SUBPROCESS_FLAGS_STDIN_INHERIT,
+      &err);
+  if (!proc) {
+    YAKALA_LOG_ERROR("spawn") << "yakala-ui spawn fail: "
+                              << (err ? err->message : "?");
+    if (err) g_error_free(err);
+    return nullptr;
+  }
   YAKALA_LOG_INFO("spawn") << "exec " << bin_str
-                           << " (" << args.size() << " args)";
-
-  const pid_t pid = fork();
-  if (pid < 0) {
-    YAKALA_LOG_ERROR("spawn") << "fork başarısız: " << std::strerror(errno);
-    return -1;
-  }
-
-  if (pid == 0) {
-    // Child — exec ile UI binary'ye geç. Başarısız olursa _exit ile çık.
-    // Industrial pattern: setsid çağrılırsa child farklı session'da olur,
-    // parent SIGHUP almıyorsa onu da götürmez. Daemon respawn senaryolarında
-    // önemli ama şimdi gerek yok — UI parent'a bağlı kalsın ki SIGCHLD reap
-    // edilebilsin.
-    execvp(argv[0], argv.data());
-    // execvp dönerse hata.
-    std::fprintf(stderr, "execvp(%s) failed: %s\n", argv[0],
-                 std::strerror(errno));
-    _exit(127);
-  }
-
-  // Parent — child PID'i dön. Reaping için ayrı SIGCHLD handler'da
-  // waitpid(WNOHANG) çağrılmalı (main.cc set ediyor).
-  YAKALA_LOG_DEBUG("spawn") << "child pid=" << pid;
-  return pid;
+                           << " (" << args.size() << " args, pid="
+                           << g_subprocess_get_identifier(proc) << ")";
+  return proc;
 }
 
 }  // namespace yakala::daemon
