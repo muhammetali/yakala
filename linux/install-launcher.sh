@@ -223,23 +223,39 @@ ensure_dependencies() {
 
 ensure_dependencies
 
-# --- Bundle kurulumu ------------------------------------------------------
+# --- Bundle kurulumu (daemon + UI) ----------------------------------------
+# Native daemon mimarisi — iki binary kurulur:
+#   - yakala-daemon : C++ daemon (tray, IPC, capture, clipboard, notification)
+#   - yakala-ui     : Flutter UI (editor, region overlay, settings; on-demand
+#                     spawn olur, iş bitince exit eder)
+# Eski "tek Flutter binary tray app" mimarisi terk edildi — Faz 2/3 native
+# daemon refactor'ı (commit feat/native-daemon).
 
-# Hangi build varyantı varsa onun bundle'ını al — release tercih edilir.
-BUNDLE_SRC=""
+# Flutter UI bundle'ı (eski yol — yakala build/linux altında).
+UI_BUNDLE_SRC=""
 for candidate in \
   "$REPO_ROOT/build/linux/x64/release/bundle" \
   "$REPO_ROOT/build/linux/x64/profile/bundle" \
   "$REPO_ROOT/build/linux/x64/debug/bundle"; do
   if [[ -x "$candidate/yakala" ]]; then
-    BUNDLE_SRC="$candidate"
+    UI_BUNDLE_SRC="$candidate"
     break
   fi
 done
 
-if [[ -z "$BUNDLE_SRC" ]]; then
-  echo "Hata: yakala bundle'ı bulunamadı." >&2
+if [[ -z "$UI_BUNDLE_SRC" ]]; then
+  echo "Hata: Flutter UI bundle'ı bulunamadı." >&2
   echo "Önce derleyin: flutter build linux --release" >&2
+  exit 1
+fi
+
+# Native daemon binary'si.
+DAEMON_BIN_SRC="$REPO_ROOT/build/daemon-linux/yakala-daemon"
+if [[ ! -x "$DAEMON_BIN_SRC" ]]; then
+  echo "Hata: yakala-daemon binary'si bulunamadı." >&2
+  echo "Önce derleyin:" >&2
+  echo "  cmake -S linux/daemon -B build/daemon-linux -DCMAKE_BUILD_TYPE=Release" >&2
+  echo "  cmake --build build/daemon-linux" >&2
   exit 1
 fi
 
@@ -253,34 +269,91 @@ fi
 
 INSTALL_DIR="$HOME/.local/share/yakala"
 APPS_DIR="$HOME/.local/share/applications"
+AUTOSTART_DIR="$HOME/.config/autostart"
 HICOLOR="$HOME/.local/share/icons/hicolor"
-mkdir -p "$APPS_DIR" "$HICOLOR/32x32/apps" "$HICOLOR/256x256/apps"
+mkdir -p "$APPS_DIR" "$AUTOSTART_DIR" "$HICOLOR/32x32/apps" "$HICOLOR/256x256/apps"
 
-# Bundle'ı stabil dizine kopyala. Eski kurulumu temizle ki yetim dosya
-# (silinmiş .so vb.) kalmasın. Atomic değil — ama bu kullanıcı bazlı
-# best-effort kurulum.
+# Çalışan eski instance'ları durdur — atomic kurulum sırasında binary
+# replace edilirse process garip davranır.
+pkill -f /home/mali/.local/share/yakala/yakala 2>/dev/null || true
+pkill -f /home/mali/.local/share/yakala/yakala-daemon 2>/dev/null || true
+sleep 1
+
+# Eski kurulumu temizle.
 if [[ -d "$INSTALL_DIR" ]]; then
   rm -rf "$INSTALL_DIR"
 fi
-mkdir -p "$INSTALL_DIR"
-# `cp -a` mod/zaman bilgilerini korur; `bundle/.` içindekileri kopyalar
-# (parent dizini değil).
-cp -a "$BUNDLE_SRC/." "$INSTALL_DIR/"
+mkdir -p "$INSTALL_DIR" "$INSTALL_DIR/icons"
 
-INSTALLED_BINARY="$INSTALL_DIR/yakala"
-chmod 0755 "$INSTALLED_BINARY"
+# Flutter UI bundle'ı kopyala — `yakala` ismi `yakala-ui` olarak rename
+# edilir (daemon'un beklediği isim).
+cp -a "$UI_BUNDLE_SRC/." "$INSTALL_DIR/"
+mv "$INSTALL_DIR/yakala" "$INSTALL_DIR/yakala-ui"
+chmod 0755 "$INSTALL_DIR/yakala-ui"
 
-# İkonlar.
+# Native daemon binary'sini kopyala.
+install -m 0755 "$DAEMON_BIN_SRC" "$INSTALL_DIR/yakala-daemon"
+
+# Tray icon'u install dizinine de koy (daemon /proc/self/exe parent'ında
+# arıyor — fallback olarak hicolor da var ama doğrudan path daha güvenilir).
+install -m 0644 "$ICON_SRC_TRAY" "$INSTALL_DIR/icons/tray.png"
+
+DAEMON_BINARY="$INSTALL_DIR/yakala-daemon"
+UI_BINARY="$INSTALL_DIR/yakala-ui"
+
+# Geriye dönük uyumluluk: install_launcher.sh'in eski versiyonlarındaki
+# referansları kırmamak için INSTALLED_BINARY değişkenini daemon'a yönlendir.
+INSTALLED_BINARY="$DAEMON_BINARY"
+
+# İkonlar (sistem hicolor theme'ine de).
 install -m 0644 "$ICON_SRC_TRAY" "$HICOLOR/32x32/apps/yakala.png"
 if [[ -f "$ICON_SRC_LARGE" ]]; then
   install -m 0644 "$ICON_SRC_LARGE" "$HICOLOR/256x256/apps/yakala.png"
 fi
 
-# .desktop — Exec stabil install yoluna işaret eder, build dizinine değil.
+# .desktop launcher — kullanıcı menüden tıklarsa Settings UI açılır.
 DESKTOP_FILE="$APPS_DIR/yakala.desktop"
-sed "s|__EXEC__|$INSTALLED_BINARY|g" \
-  "$SCRIPT_DIR/yakala.desktop.template" > "$DESKTOP_FILE"
+cat > "$DESKTOP_FILE" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Yakala
+GenericName=Ekran Yakala
+GenericName[en]=Screen Capture
+Comment=Hızlı ekran yakalama aracı
+Comment[en]=Quick screen capture tool
+Exec=$UI_BINARY --mode=settings
+Icon=yakala
+Terminal=false
+Categories=Utility;Graphics;
+StartupNotify=false
+StartupWMClass=yakala
+Keywords=screenshot;screen;capture;ekran;yakala;görüntü;
+DESKTOP
 chmod 0644 "$DESKTOP_FILE"
+
+# Autostart entry — login'de daemon çalışsın (tray icon görünsün, hotkey
+# IPC kanalı açık olsun).
+AUTOSTART_FILE="$AUTOSTART_DIR/yakala-daemon.desktop"
+cat > "$AUTOSTART_FILE" <<AUTOSTART
+[Desktop Entry]
+Type=Application
+Name=Yakala Daemon
+Comment=Yakala arka plan servisi (tray + kısayol + IPC)
+Exec=$DAEMON_BINARY
+Icon=yakala
+StartupNotify=false
+Terminal=false
+X-GNOME-Autostart-enabled=true
+AUTOSTART
+chmod 0644 "$AUTOSTART_FILE"
+
+# Eski autostart entry'sini temizle (yakala.desktop adıyla mevcut olabilir,
+# yakala-ui'yi tray app olarak başlatıyordu — artık çift instance olmaması
+# için silinmeli).
+if [[ -f "$AUTOSTART_DIR/yakala.desktop" ]]; then
+  rm -f "$AUTOSTART_DIR/yakala.desktop"
+fi
 
 # Cache yenileme — best-effort.
 if command -v update-desktop-database >/dev/null 2>&1; then
@@ -290,21 +363,97 @@ if command -v gtk-update-icon-cache >/dev/null 2>&1; then
   gtk-update-icon-cache -t "$HICOLOR" >/dev/null 2>&1 || true
 fi
 
+# --- GNOME native custom shortcut --------------------------------------------
+# Linux'ta hotkey_manager paketi keybinder-3.0 üzerinden çalışır; GNOME 46 X11
+# oturumunda `keybinder_bind` sessizce başarısız olabiliyor (paketin native
+# kodu dönüş değerini kontrol etmiyor → kullanıcıya UYARI gitmiyor, hotkey
+# hiç tetiklenmiyor). Aynı zamanda ubuntu-appindicators extension'ı tray
+# callback dispatch'ini menu activation sonrası ölü tutuyor.
+#
+# Çözüm: GNOME'un kendi custom-keybindings altyapısı bu zincirin dışında.
+# `gsettings` ile Super+Shift+C → `yakala --capture-fullscreen` tanımlıyoruz;
+# tuşa bastığında gnome-shell yakala'yı çağırıyor, IPC ile çalışan instance
+# capture başlatıyor.
+register_gnome_shortcut() {
+  if ! command -v gsettings >/dev/null 2>&1; then
+    echo "gsettings bulunamadı — sistem kısayolu kaydı atlandı (GNOME değil)."
+    return 0
+  fi
+  # GNOME / Cinnamon / Budgie hepsi gsettings ile aynı şemayı paylaşır.
+  # XDG_CURRENT_DESKTOP = "ubuntu:GNOME", "GNOME", "X-Cinnamon", "Budgie:GNOME"...
+  local desk="${XDG_CURRENT_DESKTOP:-}"
+  if [[ "${desk^^}" != *"GNOME"* ]] \
+     && [[ "${desk^^}" != *"CINNAMON"* ]] \
+     && [[ "${desk^^}" != *"BUDGIE"* ]] \
+     && [[ "${desk^^}" != *"UNITY"* ]]; then
+    echo "Masaüstü ortamı GNOME tabanlı değil ($desk) — sistem kısayolu kaydı atlandı."
+    echo "Klavye kısayolunu masaüstü ortamınızdan elle tanımlayın:"
+    echo "  Komut : $INSTALLED_BINARY --capture-fullscreen"
+    echo "  Önerilen tuş: Super+Shift+C"
+    return 0
+  fi
+
+  local kb_path="/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/yakala-capture/"
+  local kb_schema="org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:$kb_path"
+  local list_schema="org.gnome.settings-daemon.plugins.media-keys"
+
+  # Mevcut listeyi al — boş ise '[]' veya '@as []' döner.
+  local existing
+  existing=$(gsettings get "$list_schema" custom-keybindings 2>/dev/null || echo "[]")
+
+  # Kendi path'imiz listede yoksa ekle.
+  if [[ "$existing" != *"$kb_path"* ]]; then
+    if [[ "$existing" == "[]" ]] || [[ "$existing" == "@as []" ]]; then
+      gsettings set "$list_schema" custom-keybindings "['$kb_path']" || true
+    else
+      # 'sondaki ]' yerine ', '$kb_path']' — basit string sürçme yeterli.
+      local new="${existing%]}, '$kb_path']"
+      gsettings set "$list_schema" custom-keybindings "$new" || true
+    fi
+  fi
+
+  # Shortcut özellikleri — daemon'un CLI client mode'unu çağırır
+  # (yakala-daemon --capture-fullscreen → IPC ile çalışan instance'a
+  # capture_full komutu yollar).
+  gsettings set "$kb_schema" name 'Yakala — Tam Ekran' || true
+  gsettings set "$kb_schema" command "$DAEMON_BINARY --capture-fullscreen" || true
+  gsettings set "$kb_schema" binding '<Super><Shift>c' || true
+
+  echo "GNOME kısayolu kaydedildi: Super+Shift+C → yakala-daemon --capture-fullscreen"
+}
+
+register_gnome_shortcut
+
+# Daemon'u hemen başlat (autostart bir sonraki login'de devreye girer
+# ama kullanıcı login yapmadan da çalışabilmeli). Log XDG_STATE_HOME'a
+# yazılır — debug + kullanıcı bug raporu için.
+DAEMON_LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/yakala"
+mkdir -p "$DAEMON_LOG_DIR"
+DAEMON_LOG="$DAEMON_LOG_DIR/daemon.log"
+setsid -f "$DAEMON_BINARY" >>"$DAEMON_LOG" 2>&1 || true
+sleep 1
+
 cat <<EOF
-Yakala kuruldu.
+Yakala kuruldu (native daemon mimarisi).
 
-  Bundle   : $INSTALL_DIR
-  Launcher : $DESKTOP_FILE
-  İkon 32  : $HICOLOR/32x32/apps/yakala.png
-  İkon 256 : $HICOLOR/256x256/apps/yakala.png
-  Exec     : $INSTALLED_BINARY --settings
+  Daemon    : $DAEMON_BINARY
+  UI binary : $UI_BINARY
+  Launcher  : $DESKTOP_FILE
+  Autostart : $AUTOSTART_FILE
+  İkon 32   : $HICOLOR/32x32/apps/yakala.png
+  İkon 256  : $HICOLOR/256x256/apps/yakala.png
+  Kısayol   : Super+Shift+C → $DAEMON_BINARY --capture-fullscreen
 
-Programlar menüsünde "Yakala" adıyla görünmesi 1-2 saniye sürebilir.
-Artık 'flutter clean' launcher'ı kırmaz; tekrar kurmak için bu betiği
-yeniden çalıştırın.
+Daemon arka planda başlatıldı; tray ikonu birkaç saniyede görünür.
+
+Mimari:
+  - Tray + hotkey + capture + clipboard + notification → C++ daemon
+  - Editor + Region overlay + Settings → Flutter UI (on-demand spawn)
+  - IPC: Unix socket \$XDG_RUNTIME_DIR/yakala-daemon.sock
 
 Kaldırmak için:
-  rm -rf "$INSTALL_DIR"
-  rm "$DESKTOP_FILE"
+  pkill -f $DAEMON_BINARY
+  rm -rf "$INSTALL_DIR" "$DESKTOP_FILE" "$AUTOSTART_FILE"
   rm -f "$HICOLOR/32x32/apps/yakala.png" "$HICOLOR/256x256/apps/yakala.png"
+  gsettings reset org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/yakala-capture/ name 2>/dev/null
 EOF

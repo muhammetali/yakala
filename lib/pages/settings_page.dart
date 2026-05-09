@@ -1,24 +1,24 @@
+import 'dart:io';
+
 import 'package:file_selector/file_selector.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:gap/gap.dart';
 import 'package:provider/provider.dart';
+import 'package:window_manager/window_manager.dart';
 import 'package:yakala/models/capture_mode.dart';
 import 'package:yakala/providers/settings_provider.dart';
-import 'package:yakala/services/hotkey_service.dart';
-import 'package:yakala/services/window_service.dart';
-import 'package:yakala/utils/display_server.dart';
-import 'package:yakala/widgets/hotkey_recorder.dart';
 
+/// Settings sayfası — yalın ayar paneli. Daemon mimarisinde:
+///   - Hotkey: GNOME custom shortcut (Linux) / NSEvent monitor (macOS)
+///     yönetiyor; UI'de ayar yok, sadece nereye bakacağı bilgisi var.
+///   - Autostart: daemon'un kendi `.desktop`/LaunchAgent'i; UI bir
+///     opsiyon göstermiyor (install script kuruyor).
+///
+/// Settings dosyaya kaydedilir (~/.config/yakala/settings.json); daemon
+/// bir sonraki capture'da mtime check ile reload eder.
 class SettingsPage extends StatelessWidget {
-  final HotkeyService hotkeyService;
-  final WindowService windowService;
-
-  const SettingsPage({
-    super.key,
-    required this.hotkeyService,
-    required this.windowService,
-  });
+  const SettingsPage({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -34,10 +34,6 @@ class SettingsPage extends StatelessWidget {
         backgroundColor: Colors.transparent,
         elevation: 0,
         centerTitle: true,
-        leading: IconButton(
-          icon: Icon(Icons.close, color: onSurfaceVariant),
-          onPressed: windowService.hide,
-        ),
       ),
       body: Consumer<SettingsProvider>(
         builder: (context, settings, _) {
@@ -48,15 +44,6 @@ class SettingsPage extends StatelessWidget {
               children: [
                 _SectionTitle('GENEL'),
                 const Gap(10),
-                _SwitchTile(
-                  title: 'Başlangıçta Çalıştır',
-                  subtitle: kReleaseMode
-                      ? 'Bilgisayar açıldığında otomatik başla'
-                      : 'Sadece release build\'de aktif',
-                  value: settings.startAtLogin,
-                  enabled: kReleaseMode,
-                  onChanged: settings.setStartAtLogin,
-                ),
                 _SwitchTile(
                   title: 'Bildirimler',
                   subtitle: 'Yakalama sonrası native bildirim göster',
@@ -90,60 +77,63 @@ class SettingsPage extends StatelessWidget {
                 const Gap(10),
                 _Card(
                   child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          Text(
-                            'Yakalama Kısayolu',
-                            style: TextStyle(color: onSurfaceVariant),
-                          ),
-                          HotkeyRecorder(
-                            current: settings.hotkey,
-                            onChanged: (config) async {
-                              await settings.setHotkey(config);
-                              final ok = await hotkeyService.update(config);
-                              if (!ok && context.mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(
-                                    content: Text(
-                                      'Kısayol kaydı başarısız: muhtemelen '
-                                      'başka uygulama kullanıyor.',
-                                    ),
-                                    duration: Duration(seconds: 4),
-                                  ),
-                                );
-                              }
-                            },
+                          Icon(Icons.keyboard,
+                              color: colorScheme.primary, size: 20),
+                          const Gap(10),
+                          Expanded(
+                            child: Text(
+                              Platform.isMacOS
+                                  ? 'Sistem Ayarları → Klavye → '
+                                      'Klavye Kısayolları altından '
+                                      '"Yakala" kısayolunu özelleştirin.'
+                                  : 'GNOME Ayarları → Klavye → '
+                                      'Klavye Kısayolları altından '
+                                      '"Yakala" kısayolunu özelleştirin.',
+                              style: TextStyle(
+                                color: onSurfaceVariant,
+                                fontSize: 12,
+                              ),
+                            ),
                           ),
                         ],
                       ),
-                      if (DisplayServerInfo.isWayland) ...[
-                        const Gap(8),
-                        Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Icon(
-                              Icons.info_outline,
-                              size: 14,
-                              color: onSurfaceVariant.withValues(alpha: 0.7),
-                            ),
-                            const Gap(6),
-                            Expanded(
-                              child: Text(
-                                'Wayland oturumlarında bazı kompozitörler '
-                                'global kısayolu engelleyebilir. Çalışmazsa '
-                                'tray menüsünden yakalayabilirsiniz.',
-                                style: TextStyle(
-                                  color: onSurfaceVariant.withValues(alpha: 0.7),
-                                  fontSize: 11,
-                                ),
+                      const Gap(8),
+                      Row(
+                        children: [
+                          const Gap(30),
+                          Expanded(
+                            child: Text(
+                              'Varsayılan: Super+Shift+C',
+                              style: TextStyle(
+                                color: onSurfaceVariant.withValues(alpha: 0.7),
+                                fontSize: 11,
+                                fontStyle: FontStyle.italic,
                               ),
                             ),
-                          ],
-                        ),
-                      ],
+                          ),
+                          if (!Platform.isMacOS)
+                            TextButton.icon(
+                              icon: const Icon(Icons.copy, size: 14),
+                              label: const Text('Komutu kopyala'),
+                              onPressed: () {
+                                Clipboard.setData(const ClipboardData(
+                                  text: '/home/mali/.local/share/yakala/'
+                                      'yakala-daemon --capture-fullscreen',
+                                ));
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('Komut panoya kopyalandı'),
+                                    duration: Duration(seconds: 2),
+                                  ),
+                                );
+                              },
+                            ),
+                        ],
+                      ),
                     ],
                   ),
                 ),
@@ -154,7 +144,8 @@ class SettingsPage extends StatelessWidget {
                 _Card(
                   child: Row(
                     children: [
-                      Icon(Icons.folder_open, color: colorScheme.primary, size: 20),
+                      Icon(Icons.folder_open,
+                          color: colorScheme.primary, size: 20),
                       const Gap(10),
                       Expanded(
                         child: Text(
@@ -177,6 +168,18 @@ class SettingsPage extends StatelessWidget {
                         child: const Text('Değiştir'),
                       ),
                     ],
+                  ),
+                ),
+
+                const Gap(30),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: FilledButton.icon(
+                    icon: const Icon(Icons.check, size: 18),
+                    label: const Text('Kapat'),
+                    onPressed: () async {
+                      await windowManager.close();
+                    },
                   ),
                 ),
               ],
@@ -236,7 +239,6 @@ class _SwitchTile extends StatelessWidget {
   final String title;
   final String subtitle;
   final bool value;
-  final bool enabled;
   final Future<void> Function(bool) onChanged;
 
   const _SwitchTile({
@@ -244,7 +246,6 @@ class _SwitchTile extends StatelessWidget {
     required this.subtitle,
     required this.value,
     required this.onChanged,
-    this.enabled = true,
   });
 
   @override
@@ -278,7 +279,7 @@ class _SwitchTile extends StatelessWidget {
           const Gap(8),
           Switch.adaptive(
             value: value,
-            onChanged: enabled ? (v) => onChanged(v) : null,
+            onChanged: (v) => onChanged(v),
             activeTrackColor: scheme.primary,
           ),
         ],
@@ -304,4 +305,3 @@ class _ModeSelector extends StatelessWidget {
     );
   }
 }
-

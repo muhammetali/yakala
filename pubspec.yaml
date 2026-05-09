@@ -31,27 +31,20 @@ dependencies:
   flutter:
     sdk: flutter
 
-  # The following adds the Cupertino Icons font to your application.
-  # Use with the CupertinoIcons class for iOS style icons.
+  # Native daemon mimarisinde UI on-demand spawn olur — tray, hotkey,
+  # screen capture, autostart, single-instance hepsi C++ daemon (Linux)
+  # / Swift daemon (macOS) tarafında. UI sadece editor / region overlay /
+  # settings için — minimal pencere yönetimi yeterli.
   cupertino_icons: ^1.0.8
-  screen_capturer: ^0.2.3
-  window_manager: ^0.5.1
-  hotkey_manager: ^0.2.3
-  system_tray: ^2.0.3
-  path_provider: ^2.1.5
-  provider: ^6.1.5+1
-  gap: ^3.0.1
-  shared_preferences: ^2.3.0
-  launch_at_startup: ^0.5.1
-  file_selector: ^1.0.3
-  package_info_plus: ^8.0.0
-  path: ^1.9.0
-  image: ^4.5.0
-  screen_retriever: ^0.2.0
-  # Pin to exact patch: bizim widget'larımız paketin v0.7.1 dispose
-  # davranışına bağımlı (image_painter widget'ı kendi dispose'unda
-  # ImagePainterController'ı dispose ediyor). Caret kullanırsak patch
-  # versiyonu davranışı değiştirebilir → double-dispose crash.
+  window_manager: ^0.5.1   # editor/region için fullscreen+borderless
+  screen_retriever: ^0.2.0 # primary display boyutu (region overlay)
+  provider: ^6.1.5+1       # SettingsProvider ChangeNotifier wrapper
+  gap: ^3.0.1              # UI spacing
+  file_selector: ^1.0.3    # save_path picker
+  path: ^1.9.0             # path utilities
+  image: ^4.5.0            # region overlay crop (PNG decode/encode/copyCrop)
+  # image_painter v0.7.1 dispose davranışı widget'larımıza bağımlı —
+  # caret kullanırsak patch versiyonu davranışı değiştirebilir → double-dispose.
   image_painter: 0.7.1
 
 dev_dependencies:

@@ -1,48 +1,23 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:screen_capturer/screen_capturer.dart' as sc;
 import 'package:yakala/models/capture_mode.dart';
 
 void main() {
-  group('CaptureMode.label', () {
-    test('Türkçe label\'lar', () {
+  group('CaptureMode', () {
+    test('label values', () {
       expect(CaptureMode.fullScreen.label, 'Tüm Ekran');
       expect(CaptureMode.region.label, 'Bölge Seç');
       expect(CaptureMode.window.label, 'Pencere');
     });
-  });
 
-  group('CaptureMode.toScreenCapturerMode', () {
-    test('fullScreen → sc.CaptureMode.screen', () {
-      expect(
-        CaptureMode.fullScreen.toScreenCapturerMode(),
-        sc.CaptureMode.screen,
-      );
+    test('enum.name JSON-friendly format', () {
+      // Daemon ile paylaşılan settings.json'da bu string'ler kullanılır.
+      expect(CaptureMode.fullScreen.name, 'fullScreen');
+      expect(CaptureMode.region.name, 'region');
+      expect(CaptureMode.window.name, 'window');
     });
 
-    test('region → sc.CaptureMode.region', () {
-      expect(
-        CaptureMode.region.toScreenCapturerMode(),
-        sc.CaptureMode.region,
-      );
-    });
-
-    test('window → sc.CaptureMode.window', () {
-      expect(
-        CaptureMode.window.toScreenCapturerMode(),
-        sc.CaptureMode.window,
-      );
-    });
-  });
-
-  group('CaptureMode enum invariants', () {
-    test('values length 3', () {
+    test('values list count', () {
       expect(CaptureMode.values.length, 3);
-    });
-
-    test('index ile round-trip', () {
-      for (final m in CaptureMode.values) {
-        expect(CaptureMode.values[m.index], m);
-      }
     });
   });
 }
