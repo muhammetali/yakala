@@ -1,0 +1,62 @@
+name: Release Linux build
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Build-time deps for the C++ daemon. See linux/daemon/CMakeLists.txt
+      # for the authoritative list — keep this in sync with it.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake ninja-build pkg-config g++ \
+            libgtk-3-dev libayatana-appindicator3-dev libdbus-1-dev \
+            nlohmann-json3-dev
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Enable Linux desktop target
+        run: flutter config --enable-linux-desktop
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Build Flutter UI
+        run: flutter build linux --release
+
+      - name: Build native daemon
+        run: |
+          cmake -S linux/daemon -B build/daemon-linux -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/daemon-linux
+
+      # Reproduce the exact relative layout linux/install-launcher.sh expects
+      # (it looks for build/linux/x64/release/bundle and build/daemon-linux/
+      # relative to the repo root), so a downloaded archive can be extracted
+      # and installed with no path juggling.
+      - name: Package release archive
+        run: |
+          set -euo pipefail
+          PKG=dist/yakala
+          mkdir -p "$PKG/build/linux/x64/release" "$PKG/build/daemon-linux" "$PKG/linux" "$PKG/assets"
+          cp -a build/linux/x64/release/bundle "$PKG/build/linux/x64/release/bundle"
+          cp build/daemon-linux/yakala-daemon "$PKG/build/daemon-linux/yakala-daemon"
+          cp linux/install-launcher.sh "$PKG/linux/"
+          cp linux/yakala.png "$PKG/linux/"
+          cp assets/app_icon.png "$PKG/assets/"
+          cd dist && tar czf yakala-linux-x64.tar.gz yakala
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/yakala-linux-x64.tar.gz
+          generate_release_notes: true
