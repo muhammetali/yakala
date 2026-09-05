@@ -1,0 +1,16 @@
+version: 2.1
+
+jobs:
+  test:
+    docker:
+      - image: ghcr.io/cirruslabs/flutter:stable
+    steps:
+      - checkout
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+
+workflows:
+  test:
+    jobs:
+      - test
